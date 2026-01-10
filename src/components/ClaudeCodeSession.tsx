@@ -1,0 +1,1918 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Copy,
+  ChevronDown,
+  GitBranch,
+  ChevronUp,
+  X,
+  Hash,
+  Wrench,
+  FileText,
+  ArrowUp,
+  ArrowDown
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Popover } from "@/components/ui/popover";
+import { api, type Session } from "@/lib/api";
+import { cn } from "@/lib/utils";
+
+// Import Tauri event listener directly
+import { listen as tauriListen } from "@tauri-apps/api/event";
+type UnlistenFn = () => void;
+
+// Use Tauri listen directly - we're in a Tauri app context
+const listen = tauriListen;
+import { StreamMessage } from "./StreamMessage";
+import { FloatingPromptInput, type FloatingPromptInputRef } from "./FloatingPromptInput";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { TimelineNavigator } from "./TimelineNavigator";
+import { CheckpointSettings } from "./CheckpointSettings";
+import { SlashCommandsManager } from "./SlashCommandsManager";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { TooltipProvider, TooltipSimple } from "@/components/ui/tooltip-modern";
+
+import type { ClaudeStreamMessage } from "./AgentExecution";
+import { useTrackEvent, useComponentMetrics, useWorkflowTracking } from "@/hooks";
+import { SessionPersistenceService } from "@/services/sessionPersistence";
+
+interface ClaudeCodeSessionProps {
+  /**
+   * Optional session to resume (when clicking from SessionList)
+   */
+  session?: Session;
+  /**
+   * Initial project path (for new sessions)
+   */
+  initialProjectPath?: string;
+  /**
+   * Callback to go back
+   */
+  onBack: () => void;
+  /**
+   * Callback to open hooks configuration
+   */
+  onProjectSettings?: (projectPath: string) => void;
+  /**
+   * Optional className for styling
+   */
+  className?: string;
+  /**
+   * Callback when streaming state changes
+   */
+  onStreamingChange?: (isStreaming: boolean, sessionId: string | null) => void;
+  /**
+   * Callback when project path changes
+   */
+  onProjectPathChange?: (path: string) => void;
+  /**
+   * Callback when a new session is created (sessionId becomes available)
+   */
+  onSessionCreated?: (sessionId: string, projectPath: string) => void;
+  /**
+   * Whether the session is currently visible (active tab)
+   */
+  isVisible?: boolean;
+}
+
+/**
+ * ClaudeCodeSession component for interactive Claude Code sessions
+ * 
+ * @example
+ * <ClaudeCodeSession onBack={() => setView('projects')} />
+ */
+export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
+  session,
+  initialProjectPath = "",
+  className,
+  onStreamingChange,
+  onProjectPathChange,
+  onSessionCreated,
+  isVisible: _isVisible = true,
+}) => {
+  const [projectPath] = useState(initialProjectPath || session?.project_path || "");
+  const [messages, setMessages] = useState<ClaudeStreamMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rawJsonlOutput, setRawJsonlOutput] = useState<string[]>([]);
+  const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
+  const [isFirstPrompt, setIsFirstPrompt] = useState(!session);
+  const [totalTokens, setTotalTokens] = useState(0);
+  const [extractedSessionInfo, setExtractedSessionInfo] = useState<{ sessionId: string; projectId: string } | null>(null);
+  const [claudeSessionId, setClaudeSessionId] = useState<string | null>(null);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [timelineVersion, setTimelineVersion] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showForkDialog, setShowForkDialog] = useState(false);
+  const [showSlashCommandsSettings, setShowSlashCommandsSettings] = useState(false);
+  const [forkCheckpointId, setForkCheckpointId] = useState<string | null>(null);
+  const [forkSessionName, setForkSessionName] = useState("");
+
+  // Queued prompts state
+  const [queuedPrompts, setQueuedPrompts] = useState<Array<{ id: string; prompt: string; model: string }>>([]);
+
+
+  // Unused state - commented to fix TypeScript noUnusedLocals
+  // const [isProcessingQueue, _setIsProcessingQueue] = useState(false);
+  // const _processingRunIds = useRef<Set<number>>(new Set());
+  // const _scrollRef = useRef<HTMLDivElement>(null);
+  // const _bottomRef = useRef<HTMLDivElement>(null);
+
+
+  // Add collapsed state for queued prompts
+  const [queuedPromptsCollapsed, setQueuedPromptsCollapsed] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+
+  const parentRef = useRef<HTMLDivElement>(null);
+  const unlistenRefs = useRef<UnlistenFn[]>([]);
+  const hasActiveSessionRef = useRef(false);
+  const floatingPromptRef = useRef<FloatingPromptInputRef>(null);
+  const queuedPromptsRef = useRef<Array<{ id: string; prompt: string; model: string }>>([]);
+  const isMountedRef = useRef(true);
+  const isListeningRef = useRef(false);
+  const sessionStartTime = useRef<number>(Date.now());
+  const isIMEComposingRef = useRef(false);
+
+  // Session metrics state for enhanced analytics
+  const sessionMetrics = useRef({
+    firstMessageTime: null as number | null,
+    promptsSent: 0,
+    toolsExecuted: 0,
+    toolsFailed: 0,
+    filesCreated: 0,
+    filesModified: 0,
+    filesDeleted: 0,
+    codeBlocksGenerated: 0,
+    errorsEncountered: 0,
+    lastActivityTime: Date.now(),
+    toolExecutionTimes: [] as number[],
+    checkpointCount: 0,
+    wasResumed: !!session,
+    modelChanges: [] as Array<{ from: string; to: string; timestamp: number }>,
+  });
+
+  // Analytics tracking
+  const trackEvent = useTrackEvent();
+  useComponentMetrics('ClaudeCodeSession');
+  // const aiTracking = useAIInteractionTracking('sonnet'); // Default model
+  const workflowTracking = useWorkflowTracking('claude_session');
+
+  // Call onProjectPathChange when component mounts with initial path
+  useEffect(() => {
+    if (onProjectPathChange && projectPath) {
+      onProjectPathChange(projectPath);
+    }
+  }, []); // Only run on mount
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    queuedPromptsRef.current = queuedPrompts;
+  }, [queuedPrompts]);
+
+  // Get effective session info (from prop or extracted) - use useMemo to ensure it updates
+  const effectiveSession = useMemo(() => {
+    if (session) return session;
+    if (extractedSessionInfo) {
+      return {
+        id: extractedSessionInfo.sessionId,
+        project_id: extractedSessionInfo.projectId,
+        project_path: projectPath,
+        created_at: Date.now(),
+      } as Session;
+    }
+    return null;
+  }, [session, extractedSessionInfo, projectPath]);
+
+  // Filter out messages that shouldn't be displayed AND merge result stats
+  const displayableMessages = useMemo(() => {
+    const result: ClaudeStreamMessage[] = [];
+
+    // Common patterns in Claude Code's intro/boilerplate messages
+    const introPatterns = [
+      "I'm ready to help you explore",
+      "I understand my role as a READ-ONLY",
+      "planning specialist for Claude Code",
+      "Explore the codebase using",
+      "I can help you explore codebases",
+      "I'm here to help you explore",
+      "I'm ready to help you",
+      "I'll help you explore"
+    ];
+
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i];
+      let shouldDisplay = true;
+
+      // 0. Skip system:init messages - they are metadata, not conversational content
+      if (message.type === 'system' && message.subtype === 'init') {
+        shouldDisplay = false;
+      }
+
+      // 0.1 Skip system messages without meaningful content
+      else if (message.type === 'system' && !message.result && !message.error && !message.subtype) {
+        shouldDisplay = false;
+      }
+
+      // 1. Result Merging Logic
+      // If this is a result message, check if we can merge it into the previous assistant message
+      else if (message.type === 'result' && result.length > 0) {
+        const lastMsgIndex = result.length - 1;
+        const lastMsg = result[lastMsgIndex];
+
+        if (lastMsg.type === 'assistant') {
+          // Check if result content is duplicate of assistant content
+          const resultText = message.result || '';
+          const assistantText = lastMsg.message?.content
+            ?.filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+            .join('') || '';
+
+          // If texts are effectively the same (ignoring whitespace), merge stats and skip result message
+          if (resultText.trim() === assistantText.trim()) {
+            // Create a copy of the last message with added resultData
+            const updatedLastMsg = {
+              ...lastMsg,
+              resultData: {
+                cost_usd: message.cost_usd || message.total_cost_usd,
+                duration_ms: message.duration_ms,
+                num_turns: message.num_turns,
+                usage: message.usage
+              }
+            };
+
+            // Update the message in our result array
+            result[lastMsgIndex] = updatedLastMsg;
+
+            // Skip adding this result message to the list
+            continue;
+          }
+        }
+      }
+
+      // 2. Skip meta messages that don't have meaningful content
+      else if (message.isMeta && !message.leafUuid && !message.summary) {
+        shouldDisplay = false;
+      }
+
+      // 3. Skip user messages that only contain tool results that are already displayed
+      else if (message.type === "user" && message.message) {
+        if (message.isMeta) {
+          shouldDisplay = false;
+        } else {
+          const msg = message.message;
+          if (!msg.content || (Array.isArray(msg.content) && msg.content.length === 0)) {
+            shouldDisplay = false;
+          } else if (Array.isArray(msg.content)) {
+            let hasVisibleContent = false;
+            for (const content of msg.content) {
+              if (content.type === "text") {
+                hasVisibleContent = true;
+                break;
+              }
+              if (content.type === "tool_result") {
+                let willBeSkipped = false;
+                if (content.tool_use_id) {
+                  for (let j = i - 1; j >= 0; j--) {
+                    const prevMsg = messages[j];
+                    if (prevMsg.type === 'assistant' && prevMsg.message?.content && Array.isArray(prevMsg.message.content)) {
+                      const toolUse = prevMsg.message.content.find((c: any) =>
+                        c.type === 'tool_use' && c.id === content.tool_use_id
+                      );
+                      if (toolUse) {
+                        const toolName = toolUse.name?.toLowerCase();
+                        const toolsWithWidgets = [
+                          'task', 'edit', 'multiedit', 'todowrite', 'todoread', 'ls',
+                          'read', 'glob', 'bash', 'write', 'grep', 'websearch',
+                          'webfetch', 'skill', 'lsp'
+                        ];
+                        if (toolsWithWidgets.includes(toolName) || toolUse.name?.startsWith('mcp__')) {
+                          willBeSkipped = true;
+                        }
+                        break;
+                      }
+                    }
+                  }
+                }
+                if (!willBeSkipped) {
+                  hasVisibleContent = true;
+                  break;
+                }
+              }
+            }
+            if (!hasVisibleContent) {
+              shouldDisplay = false;
+            }
+          }
+        }
+      }
+
+      // 4. Skip empty assistant messages and intro/boilerplate messages
+      else if (message.type === "assistant" && message.message) {
+        const msg = message.message;
+        if (!msg.content || (Array.isArray(msg.content) && msg.content.length === 0)) {
+          shouldDisplay = false;
+        } else if (Array.isArray(msg.content)) {
+          // Check if it has any meaningful content
+          const hasContent = msg.content.some((c: any) => {
+            if (c.type === 'text') return c.text && c.text.trim().length > 0;
+            return true; // tool_use, thinking, etc are considered content
+          });
+          if (!hasContent) shouldDisplay = false;
+
+          // Skip Claude Code's initial introduction/capability messages (check ALL assistant messages)
+          if (hasContent) {
+            const textContent = msg.content
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text || '')
+              .join('');
+
+            const isIntroMessage = introPatterns.some(pattern =>
+              textContent.includes(pattern)
+            );
+
+            if (isIntroMessage) {
+              shouldDisplay = false;
+            }
+          }
+        }
+      }
+
+      if (shouldDisplay) {
+        result.push(message);
+      }
+    }
+
+    return result;
+  }, [messages]);
+
+  // Debug logging - DISABLED for performance
+  // useEffect(() => {
+  //   console.log('[ClaudeCodeSession] State update:', {
+  //     projectPath,
+  //     session,
+  //     extractedSessionInfo,
+  //     effectiveSession,
+  //     messagesCount: messages.length,
+  //     isLoading
+  //   });
+  // }, [projectPath, session, extractedSessionInfo, effectiveSession, messages.length, isLoading]);
+
+  // Load session history if resuming
+  useEffect(() => {
+    if (session) {
+      // Set the claudeSessionId immediately when we have a session
+      setClaudeSessionId(session.id);
+
+      // Load session history first, then check for active session
+      const initializeSession = async () => {
+        await loadSessionHistory();
+        // After loading history, check if the session is still active
+        if (isMountedRef.current) {
+          await checkForActiveSession();
+        }
+      };
+
+      initializeSession();
+    }
+  }, [session]); // Remove hasLoadedSession dependency to ensure it runs on mount
+
+  // Report streaming state changes
+  useEffect(() => {
+    onStreamingChange?.(isLoading, claudeSessionId);
+  }, [isLoading, claudeSessionId, onStreamingChange]);
+
+  // Calculate total tokens from messages
+  useEffect(() => {
+    const tokens = messages.reduce((total, msg) => {
+      if (msg.message?.usage) {
+        return total + msg.message.usage.input_tokens + msg.message.usage.output_tokens;
+      }
+      if (msg.usage) {
+        return total + msg.usage.input_tokens + msg.usage.output_tokens;
+      }
+      return total;
+    }, 0);
+    setTotalTokens(tokens);
+  }, [messages]);
+
+  const loadSessionHistory = async () => {
+    if (!session) return;
+
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      const history = await api.loadSessionHistory(session.id, session.project_id);
+
+      // Save session data for restoration
+      if (history && history.length > 0) {
+        SessionPersistenceService.saveSession(
+          session.id,
+          session.project_id,
+          session.project_path,
+          history.length
+        );
+      }
+
+      // Convert history to messages format
+      const loadedMessages: ClaudeStreamMessage[] = history.map(entry => ({
+        ...entry,
+        type: entry.type || "assistant"
+      }));
+
+      setMessages(loadedMessages);
+      setRawJsonlOutput(history.map(h => JSON.stringify(h)));
+
+      // After loading history, we're continuing a conversation
+      setIsFirstPrompt(false);
+
+      // Scroll to bottom after loading history
+      setTimeout(() => {
+        if (loadedMessages.length > 0) {
+          const scrollElement = parentRef.current;
+          if (scrollElement) {
+            scrollElement.scrollTo({
+              top: scrollElement.scrollHeight,
+              behavior: 'auto'
+            });
+          }
+        }
+      }, 100);
+    } catch (err) {
+      console.error("Failed to load session history:", err);
+      setError("Failed to load session history");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const checkForActiveSession = async () => {
+    // If we have a session prop, check if it's still active
+    if (session) {
+      try {
+        const activeSessions = await api.listRunningClaudeSessions();
+        const activeSession = activeSessions.find((s: any) => {
+          if ('process_type' in s && s.process_type && 'ClaudeSession' in s.process_type) {
+            return (s.process_type as any).ClaudeSession.session_id === session.id;
+          }
+          return false;
+        });
+
+        if (activeSession) {
+          // Session is still active, reconnect to its stream
+          console.log('[ClaudeCodeSession] Found active session, reconnecting:', session.id);
+          // IMPORTANT: Set claudeSessionId before reconnecting
+          setClaudeSessionId(session.id);
+
+          // Don't add buffered messages here - they've already been loaded by loadSessionHistory
+          // Just set up listeners for new messages
+
+          // Set up listeners for the active session
+          reconnectToSession(session.id);
+        }
+      } catch (err) {
+        console.error('Failed to check for active sessions:', err);
+      }
+    }
+  };
+
+  const reconnectToSession = async (sessionId: string) => {
+    console.log('[ClaudeCodeSession] Reconnecting to session:', sessionId);
+
+    // Prevent duplicate listeners
+    if (isListeningRef.current) {
+      console.log('[ClaudeCodeSession] Already listening to session, skipping reconnect');
+      return;
+    }
+
+    // Clean up previous listeners
+    unlistenRefs.current.forEach(unlisten => unlisten());
+    unlistenRefs.current = [];
+
+    // IMPORTANT: Set the session ID before setting up listeners
+    setClaudeSessionId(sessionId);
+
+    // Mark as listening
+    isListeningRef.current = true;
+
+    // Set up session-specific listeners
+    const outputUnlisten = await listen(`claude-output:${sessionId}`, async (event: any) => {
+      try {
+        console.log('[ClaudeCodeSession] Received claude-output on reconnect:', event.payload);
+
+        if (!isMountedRef.current) return;
+
+        // Store raw JSONL
+        setRawJsonlOutput(prev => [...prev, event.payload]);
+
+        // Parse and display
+        const message = JSON.parse(event.payload) as ClaudeStreamMessage;
+
+        // Avoid duplicate messages by checking UUID
+        setMessages(prev => {
+          // Check if message with same UUID already exists
+          if (message.uuid && prev.some(m => m.uuid === message.uuid)) {
+            console.log('[ClaudeCodeSession] Skipping duplicate message:', message.uuid);
+            return prev;
+          }
+          return [...prev, message];
+        });
+      } catch (err) {
+        console.error("Failed to parse message:", err, event.payload);
+      }
+    });
+
+    const errorUnlisten = await listen(`claude-error:${sessionId}`, (event: any) => {
+      console.error("Claude error:", event.payload);
+      if (isMountedRef.current) {
+        setError(event.payload);
+      }
+    });
+
+    const completeUnlisten = await listen(`claude-complete:${sessionId}`, async (event: any) => {
+      console.log('[ClaudeCodeSession] Received claude-complete on reconnect:', event.payload);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+        hasActiveSessionRef.current = false;
+      }
+    });
+
+    unlistenRefs.current = [outputUnlisten, errorUnlisten, completeUnlisten];
+
+    // Mark as loading to show the session is active
+    if (isMountedRef.current) {
+      setIsLoading(true);
+      hasActiveSessionRef.current = true;
+    }
+  };
+
+  // Project path selection handled by parent tab controls
+
+  const handleSendPrompt = async (prompt: string, model: string) => {
+    console.log('[ClaudeCodeSession] handleSendPrompt called with:', { prompt, model, projectPath, claudeSessionId, effectiveSession });
+
+    if (!projectPath) {
+      setError("Please select a project directory first");
+      return;
+    }
+
+    // If already loading, queue the prompt
+    if (isLoading) {
+      const newPrompt = {
+        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        prompt,
+        model
+      };
+      setQueuedPrompts(prev => [...prev, newPrompt]);
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      setError(null);
+      hasActiveSessionRef.current = true;
+
+      // For resuming sessions, ensure we have the session ID
+      if (effectiveSession && !claudeSessionId) {
+        setClaudeSessionId(effectiveSession.id);
+      }
+
+      // Only clean up and set up new listeners if not already listening
+      if (!isListeningRef.current) {
+        // Clean up previous listeners
+        unlistenRefs.current.forEach(unlisten => unlisten());
+        unlistenRefs.current = [];
+
+        // Mark as setting up listeners
+        isListeningRef.current = true;
+
+        // --------------------------------------------------------------------
+        // 1️⃣  Event Listener Setup Strategy
+        // --------------------------------------------------------------------
+        // Claude Code may emit a *new* session_id even when we pass --resume. If
+        // we listen only on the old session-scoped channel we will miss the
+        // stream until the user navigates away & back. To avoid this we:
+        //   • Always start with GENERIC listeners (no suffix) so we catch the
+        //     very first "system:init" message regardless of the session id.
+        //   • Once that init message provides the *actual* session_id, we
+        //     dynamically switch to session-scoped listeners and stop the
+        //     generic ones to prevent duplicate handling.
+        // --------------------------------------------------------------------
+
+        console.log('[ClaudeCodeSession] Setting up generic event listeners first');
+
+        let currentSessionId: string | null = claudeSessionId || effectiveSession?.id || null;
+
+        // Helper to attach session-specific listeners **once we are sure**
+        const attachSessionSpecificListeners = async (sid: string) => {
+          console.log('[ClaudeCodeSession] Attaching session-specific listeners for', sid);
+
+          const specificOutputUnlisten = await listen(`claude-output:${sid}`, (evt: any) => {
+            handleStreamMessage(evt.payload);
+          });
+
+          const specificErrorUnlisten = await listen(`claude-error:${sid}`, (evt: any) => {
+            console.error('Claude error (scoped):', evt.payload);
+            setError(evt.payload);
+          });
+
+          const specificCompleteUnlisten = await listen(`claude-complete:${sid}`, (evt: any) => {
+            console.log('[ClaudeCodeSession] Received claude-complete (scoped):', evt.payload);
+            processComplete(evt.payload);
+          });
+
+          // Replace existing unlisten refs with these new ones (after cleaning up)
+          unlistenRefs.current.forEach((u) => u());
+          unlistenRefs.current = [specificOutputUnlisten, specificErrorUnlisten, specificCompleteUnlisten];
+        };
+
+        // Generic listeners (catch-all)
+        const genericOutputUnlisten = await listen('claude-output', async (event: any) => {
+          handleStreamMessage(event.payload);
+
+          // Attempt to extract session_id on the fly (for the very first init)
+          try {
+            const msg = JSON.parse(event.payload) as ClaudeStreamMessage;
+            if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
+              if (!currentSessionId || currentSessionId !== msg.session_id) {
+                console.log('[ClaudeCodeSession] Detected new session_id from generic listener:', msg.session_id);
+                currentSessionId = msg.session_id;
+                setClaudeSessionId(msg.session_id);
+
+                // If we haven't extracted session info before, do it now
+                if (!extractedSessionInfo) {
+                  // Use cwd from message if available, otherwise fallback to prop/state
+                  const effectiveProjectPath = msg.cwd || projectPath;
+                  const projectId = effectiveProjectPath.replace(/[^a-zA-Z0-9]/g, '-');
+
+                  setExtractedSessionInfo({ sessionId: msg.session_id, projectId });
+
+                  // Save session data for restoration
+                  SessionPersistenceService.saveSession(
+                    msg.session_id,
+                    projectId,
+                    effectiveProjectPath,
+                    messages.length
+                  );
+
+                  // Notify parent component about the new session
+                  onSessionCreated?.(msg.session_id, effectiveProjectPath);
+                }
+
+                // Switch to session-specific listeners
+                await attachSessionSpecificListeners(msg.session_id);
+              }
+            }
+          } catch {
+            /* ignore parse errors */
+          }
+        });
+
+        // Ref to track the current streaming message ID for accumulating deltas
+        const streamingMessageRef = { current: null as { id: string; text: string } | null };
+
+        // Helper to process any JSONL stream message string or object
+        function handleStreamMessage(payload: string | ClaudeStreamMessage) {
+          try {
+            // Don't process if component unmounted
+            if (!isMountedRef.current) return;
+
+            let message: ClaudeStreamMessage;
+            let rawPayload: string;
+
+            if (typeof payload === 'string') {
+              // Tauri mode: payload is a JSON string
+              rawPayload = payload;
+              message = JSON.parse(payload) as ClaudeStreamMessage;
+            } else {
+              // Web mode: payload is already parsed object
+              message = payload;
+              rawPayload = JSON.stringify(payload);
+            }
+
+            console.log('[ClaudeCodeSession] handleStreamMessage - message type:', message.type);
+
+            // Store raw JSONL
+            setRawJsonlOutput((prev) => [...prev, rawPayload]);
+
+            // Handle stream_event for real-time streaming
+            if (message.type === 'stream_event' && (message as any).event) {
+              const event = (message as any).event;
+
+              // Start of a new message
+              if (event.type === 'message_start') {
+                const msgId = event.message?.id || `stream-${Date.now()}`;
+                streamingMessageRef.current = { id: msgId, text: '' };
+
+                // Create an initial streaming message placeholder
+                const streamingMessage: ClaudeStreamMessage = {
+                  type: 'assistant',
+                  message: {
+                    id: msgId,
+                    model: event.message?.model,
+                    role: 'assistant',
+                    content: [{ type: 'text', text: '' }],
+                    stop_reason: null,
+                  },
+                  session_id: message.session_id,
+                  uuid: message.uuid,
+                  isStreaming: true,
+                };
+                setMessages((prev) => [...prev, streamingMessage]);
+              }
+
+              // Text delta - append to the streaming message
+              else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+                const deltaText = event.delta.text || '';
+                if (streamingMessageRef.current) {
+                  streamingMessageRef.current.text += deltaText;
+
+                  // Capture the current text before entering async callback
+                  const currentText = streamingMessageRef.current.text;
+
+                  // Update the last message with the accumulated text
+                  setMessages((prev) => {
+                    const lastIndex = prev.length - 1;
+                    if (lastIndex >= 0 && (prev[lastIndex] as any).isStreaming) {
+                      const updated = [...prev];
+                      const lastMsg = { ...updated[lastIndex] };
+                      if (lastMsg.message?.content?.[0]) {
+                        lastMsg.message = {
+                          ...lastMsg.message,
+                          content: [{ type: 'text', text: currentText }],
+                        };
+                      }
+                      updated[lastIndex] = lastMsg;
+                      return updated;
+                    }
+                    return prev;
+                  });
+                }
+              }
+
+              // Message stop - finalize the streaming message
+              else if (event.type === 'message_stop') {
+                streamingMessageRef.current = null;
+                // Mark the last message as no longer streaming
+                setMessages((prev) => {
+                  const lastIndex = prev.length - 1;
+                  if (lastIndex >= 0 && (prev[lastIndex] as any).isStreaming) {
+                    const updated = [...prev];
+                    const lastMsg = { ...updated[lastIndex] };
+                    delete (lastMsg as any).isStreaming;
+                    updated[lastIndex] = lastMsg;
+                    return updated;
+                  }
+                  return prev;
+                });
+              }
+
+              return; // Don't add stream_event to messages array directly
+            }
+
+            // Track enhanced tool execution
+            if (message.type === 'assistant' && message.message?.content) {
+              // Skip if this is a duplicate of a streaming message we already have
+              if (streamingMessageRef.current) {
+                // This is likely the final complete message - replace the streaming placeholder
+                setMessages((prev) => {
+                  const lastIndex = prev.length - 1;
+                  if (lastIndex >= 0 && (prev[lastIndex] as any).isStreaming) {
+                    const updated = [...prev];
+                    updated[lastIndex] = message;
+                    return updated;
+                  }
+                  return [...prev, message];
+                });
+                streamingMessageRef.current = null;
+                return;
+              }
+
+              const toolUses = message.message.content.filter((c: any) => c.type === 'tool_use');
+              toolUses.forEach((toolUse: any) => {
+                // Increment tools executed counter
+                sessionMetrics.current.toolsExecuted += 1;
+                sessionMetrics.current.lastActivityTime = Date.now();
+
+                // Track file operations
+                const toolName = toolUse.name?.toLowerCase() || '';
+                if (toolName.includes('create') || toolName.includes('write')) {
+                  sessionMetrics.current.filesCreated += 1;
+                } else if (toolName.includes('edit') || toolName.includes('multiedit') || toolName.includes('search_replace')) {
+                  sessionMetrics.current.filesModified += 1;
+                } else if (toolName.includes('delete')) {
+                  sessionMetrics.current.filesDeleted += 1;
+                }
+
+                // Track tool start - we'll track completion when we get the result
+                workflowTracking.trackStep(toolUse.name);
+              });
+            }
+
+            // Track tool results
+            if (message.type === 'user' && message.message?.content) {
+              const toolResults = message.message.content.filter((c: any) => c.type === 'tool_result');
+              toolResults.forEach((result: any) => {
+                const isError = result.is_error || false;
+                // Note: We don't have execution time here, but we can track success/failure
+                if (isError) {
+                  sessionMetrics.current.toolsFailed += 1;
+                  sessionMetrics.current.errorsEncountered += 1;
+
+                  trackEvent.enhancedError({
+                    error_type: 'tool_execution',
+                    error_code: 'tool_failed',
+                    error_message: result.content,
+                    context: `Tool execution failed`,
+                    user_action_before_error: 'executing_tool',
+                    recovery_attempted: false,
+                    recovery_successful: false,
+                    error_frequency: 1,
+                    stack_trace_hash: undefined
+                  });
+                }
+              });
+            }
+
+            // Track code blocks generated
+            if (message.type === 'assistant' && message.message?.content) {
+              const codeBlocks = message.message.content.filter((c: any) =>
+                c.type === 'text' && c.text?.includes('```')
+              );
+              if (codeBlocks.length > 0) {
+                // Count code blocks in text content
+                codeBlocks.forEach((block: any) => {
+                  const matches = (block.text.match(/```/g) || []).length;
+                  sessionMetrics.current.codeBlocksGenerated += Math.floor(matches / 2);
+                });
+              }
+            }
+
+            // Track errors in system messages
+            if (message.type === 'system' && (message.subtype === 'error' || message.error)) {
+              sessionMetrics.current.errorsEncountered += 1;
+            }
+
+            // Avoid duplicate messages
+            setMessages((prev) => {
+              // Check UUID-based duplicates
+              if (message.uuid && prev.some(m => m.uuid === message.uuid)) {
+                return prev;
+              }
+
+              // For user messages with text content, check if we already have a user message with the same text
+              // This prevents Claude's returned user message from duplicating our locally added one
+              if (message.type === 'user' && message.message?.content) {
+                const messageText = Array.isArray(message.message.content)
+                  ? message.message.content
+                    .filter((c: any) => c.type === 'text')
+                    .map((c: any) => c.text)
+                    .join('')
+                  : '';
+
+                if (messageText) {
+                  const hasDuplicateUserMessage = prev.some(m => {
+                    if (m.type !== 'user' || !m.message?.content) return false;
+                    const existingText = Array.isArray(m.message.content)
+                      ? m.message.content
+                        .filter((c: any) => c.type === 'text')
+                        .map((c: any) => c.text)
+                        .join('')
+                      : '';
+                    return existingText === messageText;
+                  });
+
+                  if (hasDuplicateUserMessage) {
+                    console.log('[ClaudeCodeSession] Skipping duplicate user message with same text');
+                    return prev;
+                  }
+                }
+              }
+
+              return [...prev, message];
+            });
+          } catch (err) {
+            console.error('Failed to parse message:', err, payload);
+          }
+        }
+
+        // Helper to handle completion events (both generic and scoped)
+        const processComplete = async (success: boolean) => {
+          setIsLoading(false);
+          hasActiveSessionRef.current = false;
+          isListeningRef.current = false; // Reset listening state
+
+          // Track enhanced session stopped metrics when session completes
+          if (effectiveSession && claudeSessionId) {
+            const sessionStartTimeValue = messages.length > 0 ? messages[0].timestamp || Date.now() : Date.now();
+            const duration = Date.now() - sessionStartTimeValue;
+            const metrics = sessionMetrics.current;
+            const timeToFirstMessage = metrics.firstMessageTime
+              ? metrics.firstMessageTime - sessionStartTime.current
+              : undefined;
+            const idleTime = Date.now() - metrics.lastActivityTime;
+            const avgResponseTime = metrics.toolExecutionTimes.length > 0
+              ? metrics.toolExecutionTimes.reduce((a, b) => a + b, 0) / metrics.toolExecutionTimes.length
+              : undefined;
+
+            trackEvent.enhancedSessionStopped({
+              // Basic metrics
+              duration_ms: duration,
+              messages_count: messages.length,
+              reason: success ? 'completed' : 'error',
+
+              // Timing metrics
+              time_to_first_message_ms: timeToFirstMessage,
+              average_response_time_ms: avgResponseTime,
+              idle_time_ms: idleTime,
+
+              // Interaction metrics
+              prompts_sent: metrics.promptsSent,
+              tools_executed: metrics.toolsExecuted,
+              tools_failed: metrics.toolsFailed,
+              files_created: metrics.filesCreated,
+              files_modified: metrics.filesModified,
+              files_deleted: metrics.filesDeleted,
+
+              // Content metrics
+              total_tokens_used: totalTokens,
+              code_blocks_generated: metrics.codeBlocksGenerated,
+              errors_encountered: metrics.errorsEncountered,
+
+              // Session context
+              model: metrics.modelChanges.length > 0
+                ? metrics.modelChanges[metrics.modelChanges.length - 1].to
+                : 'sonnet',
+              has_checkpoints: metrics.checkpointCount > 0,
+              checkpoint_count: metrics.checkpointCount,
+              was_resumed: metrics.wasResumed,
+
+              // Agent context (if applicable)
+              agent_type: undefined, // TODO: Pass from agent execution
+              agent_name: undefined, // TODO: Pass from agent execution
+              agent_success: success,
+
+              // Stop context
+              stop_source: 'completed',
+              final_state: success ? 'success' : 'failed',
+              has_pending_prompts: queuedPrompts.length > 0,
+              pending_prompts_count: queuedPrompts.length,
+            });
+          }
+
+          if (effectiveSession && success) {
+            try {
+              const settings = await api.getCheckpointSettings(
+                effectiveSession.id,
+                effectiveSession.project_id,
+                projectPath
+              );
+
+              if (settings.auto_checkpoint_enabled) {
+                await api.checkAutoCheckpoint(
+                  effectiveSession.id,
+                  effectiveSession.project_id,
+                  projectPath,
+                  prompt
+                );
+                // Reload timeline to show new checkpoint
+                setTimelineVersion((v) => v + 1);
+              }
+            } catch (err) {
+              console.error('Failed to check auto checkpoint:', err);
+            }
+          }
+
+          // Process queued prompts after completion
+          if (queuedPromptsRef.current.length > 0) {
+            const [nextPrompt, ...remainingPrompts] = queuedPromptsRef.current;
+            setQueuedPrompts(remainingPrompts);
+
+            // Small delay to ensure UI updates
+            setTimeout(() => {
+              handleSendPrompt(nextPrompt.prompt, nextPrompt.model);
+            }, 100);
+          }
+        };
+
+        const genericErrorUnlisten = await listen('claude-error', (evt: any) => {
+          console.error('Claude error:', evt.payload);
+          setError(evt.payload);
+        });
+
+        const genericCompleteUnlisten = await listen('claude-complete', (evt: any) => {
+          console.log('[ClaudeCodeSession] Received claude-complete (generic):', evt.payload);
+          processComplete(evt.payload);
+        });
+
+        // Store the generic unlisteners for now; they may be replaced later.
+        unlistenRefs.current = [genericOutputUnlisten, genericErrorUnlisten, genericCompleteUnlisten];
+
+        // --------------------------------------------------------------------
+        // 2️⃣  Auto-checkpoint logic moved after listener setup (unchanged)
+        // --------------------------------------------------------------------
+
+        // Add the user message immediately to the UI (after setting up listeners)
+        const userMessage: ClaudeStreamMessage = {
+          type: "user",
+          uuid: `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          message: {
+            content: [
+              {
+                type: "text",
+                text: prompt
+              }
+            ]
+          }
+        };
+        setMessages(prev => [...prev, userMessage]);
+
+        // Update session metrics
+        sessionMetrics.current.promptsSent += 1;
+        sessionMetrics.current.lastActivityTime = Date.now();
+        if (!sessionMetrics.current.firstMessageTime) {
+          sessionMetrics.current.firstMessageTime = Date.now();
+        }
+
+        // Track model changes
+        const lastModel = sessionMetrics.current.modelChanges.length > 0
+          ? sessionMetrics.current.modelChanges[sessionMetrics.current.modelChanges.length - 1].to
+          : (sessionMetrics.current.wasResumed ? 'sonnet' : model); // Default to sonnet if resumed
+
+        if (lastModel !== model) {
+          sessionMetrics.current.modelChanges.push({
+            from: lastModel,
+            to: model,
+            timestamp: Date.now()
+          });
+        }
+
+        // Track enhanced prompt submission
+        const codeBlockMatches = prompt.match(/```[\s\S]*?```/g) || [];
+        const hasCode = codeBlockMatches.length > 0;
+        const conversationDepth = messages.filter(m => m.user_message).length;
+        const sessionAge = sessionStartTime.current ? Date.now() - sessionStartTime.current : 0;
+        const wordCount = prompt.split(/\s+/).filter(word => word.length > 0).length;
+
+        trackEvent.enhancedPromptSubmitted({
+          prompt_length: prompt.length,
+          model: model,
+          has_attachments: false, // TODO: Add attachment support when implemented
+          source: 'keyboard', // TODO: Track actual source (keyboard vs button)
+          word_count: wordCount,
+          conversation_depth: conversationDepth,
+          prompt_complexity: wordCount < 20 ? 'simple' : wordCount < 100 ? 'moderate' : 'complex',
+          contains_code: hasCode,
+          language_detected: hasCode ? codeBlockMatches?.[0]?.match(/```(\w+)/)?.[1] : undefined,
+          session_age_ms: sessionAge
+        });
+
+        // Execute the appropriate command
+        // Execute the appropriate command
+        const isSdkModel = model.startsWith('sdk:');
+        const effectiveModel = isSdkModel ? model.replace('sdk:', '') : model;
+        
+        // Calculate session ID to use for both SDK and legacy paths
+        const sessionIdToUse = claudeSessionId || effectiveSession?.id || "";
+
+        if (isSdkModel) {
+            console.log('[ClaudeCodeSession] Executing via SDK Agent (session: ' + sessionIdToUse + ')');
+            await api.executeSdkAgent(projectPath, prompt, effectiveModel, sessionIdToUse || undefined);
+        } else if (effectiveSession && !isFirstPrompt) {
+          // Use claudeSessionId (actual Claude Code UUID) for resume, not effectiveSession.id
+          // which might be an agent run ID or custom ID
+
+          // Check if the session ID looks like a valid UUID
+          const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionIdToUse);
+
+          if (isValidUuid) {
+            console.log('[ClaudeCodeSession] Resuming session with valid UUID:', sessionIdToUse);
+            trackEvent.sessionResumed(sessionIdToUse);
+            trackEvent.modelSelected(model);
+            await api.resumeClaudeCode(projectPath, sessionIdToUse, prompt, model);
+          } else {
+            // If we don't have a valid UUID, start a new session
+            // Using continueClaudeCode requires a recent session in the same directory which may not exist
+            console.log('[ClaudeCodeSession] No valid UUID, starting fresh session instead. ID was:', sessionIdToUse);
+            setIsFirstPrompt(false);
+            trackEvent.sessionCreated(model, 'prompt_input');
+            trackEvent.modelSelected(model);
+            await api.executeClaudeCode(projectPath, prompt, model);
+          }
+        } else {
+          console.log('[ClaudeCodeSession] Starting new session');
+          setIsFirstPrompt(false);
+          trackEvent.sessionCreated(model, 'prompt_input');
+          trackEvent.modelSelected(model);
+          await api.executeClaudeCode(projectPath, prompt, model);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to send prompt:", err);
+      setError("Failed to send prompt");
+      setIsLoading(false);
+      hasActiveSessionRef.current = false;
+    }
+  };
+
+  const handleCopyAsJsonl = async () => {
+    const jsonl = rawJsonlOutput.join('\n');
+    await navigator.clipboard.writeText(jsonl);
+    setCopyPopoverOpen(false);
+  };
+
+  const handleCopyAsMarkdown = async () => {
+    let markdown = `# Claude Code Session\n\n`;
+    markdown += `**Project:** ${projectPath}\n`;
+    markdown += `**Date:** ${new Date().toISOString()}\n\n`;
+    markdown += `---\n\n`;
+
+    for (const msg of messages) {
+      if (msg.type === "system" && msg.subtype === "init") {
+        markdown += `## System Initialization\n\n`;
+        markdown += `- Session ID: \`${msg.session_id || 'N/A'}\`\n`;
+        markdown += `- Model: \`${msg.model || 'default'}\`\n`;
+        if (msg.cwd) markdown += `- Working Directory: \`${msg.cwd}\`\n`;
+        if (msg.tools?.length) markdown += `- Tools: ${msg.tools.join(', ')}\n`;
+        markdown += `\n`;
+      } else if (msg.type === "assistant" && msg.message) {
+        markdown += `## Assistant\n\n`;
+        for (const content of msg.message.content || []) {
+          if (content.type === "text") {
+            const textContent = typeof content.text === 'string'
+              ? content.text
+              : (content.text?.text || JSON.stringify(content.text || content));
+            markdown += `${textContent}\n\n`;
+          } else if (content.type === "tool_use") {
+            markdown += `### Tool: ${content.name}\n\n`;
+            markdown += `\`\`\`json\n${JSON.stringify(content.input, null, 2)}\n\`\`\`\n\n`;
+          }
+        }
+        if (msg.message.usage) {
+          markdown += `*Tokens: ${msg.message.usage.input_tokens} in, ${msg.message.usage.output_tokens} out*\n\n`;
+        }
+      } else if (msg.type === "user" && msg.message) {
+        markdown += `## User\n\n`;
+        for (const content of msg.message.content || []) {
+          if (content.type === "text") {
+            const textContent = typeof content.text === 'string'
+              ? content.text
+              : (content.text?.text || JSON.stringify(content.text));
+            markdown += `${textContent}\n\n`;
+          } else if (content.type === "tool_result") {
+            markdown += `### Tool Result\n\n`;
+            let contentText = '';
+            if (typeof content.content === 'string') {
+              contentText = content.content;
+            } else if (content.content && typeof content.content === 'object') {
+              if (content.content.text) {
+                contentText = content.content.text;
+              } else if (Array.isArray(content.content)) {
+                contentText = content.content
+                  .map((c: any) => (typeof c === 'string' ? c : c.text || JSON.stringify(c)))
+                  .join('\n');
+              } else {
+                contentText = JSON.stringify(content.content, null, 2);
+              }
+            }
+            markdown += `\`\`\`\n${contentText}\n\`\`\`\n\n`;
+          }
+        }
+      } else if (msg.type === "result") {
+        markdown += `## Execution Result\n\n`;
+        if (msg.result) {
+          markdown += `${msg.result}\n\n`;
+        }
+        if (msg.error) {
+          markdown += `**Error:** ${msg.error}\n\n`;
+        }
+      }
+    }
+
+    await navigator.clipboard.writeText(markdown);
+    setCopyPopoverOpen(false);
+  };
+
+  const handleCheckpointSelect = async () => {
+    // Reload messages from the checkpoint
+    await loadSessionHistory();
+    // Ensure timeline reloads to highlight current checkpoint
+    setTimelineVersion((v) => v + 1);
+  };
+
+  const handleCheckpointCreated = () => {
+    // Update checkpoint count in session metrics
+    sessionMetrics.current.checkpointCount += 1;
+  };
+
+  const handleCancelExecution = async () => {
+    if (!claudeSessionId || !isLoading) return;
+
+    try {
+      const sessionStartTime = messages.length > 0 ? messages[0].timestamp || Date.now() : Date.now();
+      const duration = Date.now() - sessionStartTime;
+
+      await api.cancelClaudeExecution(claudeSessionId);
+
+      // Calculate metrics for enhanced analytics
+      const metrics = sessionMetrics.current;
+      const timeToFirstMessage = metrics.firstMessageTime
+        ? metrics.firstMessageTime - sessionStartTime.current
+        : undefined;
+      const idleTime = Date.now() - metrics.lastActivityTime;
+      const avgResponseTime = metrics.toolExecutionTimes.length > 0
+        ? metrics.toolExecutionTimes.reduce((a, b) => a + b, 0) / metrics.toolExecutionTimes.length
+        : undefined;
+
+      // Track enhanced session stopped
+      trackEvent.enhancedSessionStopped({
+        // Basic metrics
+        duration_ms: duration,
+        messages_count: messages.length,
+        reason: 'user_stopped',
+
+        // Timing metrics
+        time_to_first_message_ms: timeToFirstMessage,
+        average_response_time_ms: avgResponseTime,
+        idle_time_ms: idleTime,
+
+        // Interaction metrics
+        prompts_sent: metrics.promptsSent,
+        tools_executed: metrics.toolsExecuted,
+        tools_failed: metrics.toolsFailed,
+        files_created: metrics.filesCreated,
+        files_modified: metrics.filesModified,
+        files_deleted: metrics.filesDeleted,
+
+        // Content metrics
+        total_tokens_used: totalTokens,
+        code_blocks_generated: metrics.codeBlocksGenerated,
+        errors_encountered: metrics.errorsEncountered,
+
+        // Session context
+        model: metrics.modelChanges.length > 0
+          ? metrics.modelChanges[metrics.modelChanges.length - 1].to
+          : 'sonnet', // Default to sonnet
+        has_checkpoints: metrics.checkpointCount > 0,
+        checkpoint_count: metrics.checkpointCount,
+        was_resumed: metrics.wasResumed,
+
+        // Agent context (if applicable)
+        agent_type: undefined, // TODO: Pass from agent execution
+        agent_name: undefined, // TODO: Pass from agent execution
+        agent_success: undefined, // TODO: Pass from agent execution
+
+        // Stop context
+        stop_source: 'user_button',
+        final_state: 'cancelled',
+        has_pending_prompts: queuedPrompts.length > 0,
+        pending_prompts_count: queuedPrompts.length,
+      });
+
+      // Clean up listeners
+      unlistenRefs.current.forEach(unlisten => unlisten());
+      unlistenRefs.current = [];
+
+      // Reset states
+      setIsLoading(false);
+      hasActiveSessionRef.current = false;
+      isListeningRef.current = false;
+      setError(null);
+
+      // Clear queued prompts
+      setQueuedPrompts([]);
+
+      // Add a message indicating the session was cancelled
+      const cancelMessage: ClaudeStreamMessage = {
+        type: "system",
+        subtype: "info",
+        result: "Session cancelled by user",
+        timestamp: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, cancelMessage]);
+    } catch (err) {
+      console.error("Failed to cancel execution:", err);
+
+      // Even if backend fails, we should update UI to reflect stopped state
+      // Add error message but still stop the UI loading state
+      const errorMessage: ClaudeStreamMessage = {
+        type: "system",
+        subtype: "error",
+        result: `Failed to cancel execution: ${err instanceof Error ? err.message : 'Unknown error'}. The process may still be running in the background.`,
+        timestamp: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+
+      // Clean up listeners anyway
+      unlistenRefs.current.forEach(unlisten => unlisten());
+      unlistenRefs.current = [];
+
+      // Reset states to allow user to continue
+      setIsLoading(false);
+      hasActiveSessionRef.current = false;
+      isListeningRef.current = false;
+      setError(null);
+    }
+  };
+
+  const handleFork = (checkpointId: string) => {
+    setForkCheckpointId(checkpointId);
+    setForkSessionName(`Fork-${new Date().toISOString().slice(0, 10)}`);
+    setShowForkDialog(true);
+  };
+
+  const handleCompositionStart = () => {
+    isIMEComposingRef.current = true;
+  };
+
+  const handleCompositionEnd = () => {
+    setTimeout(() => {
+      isIMEComposingRef.current = false;
+    }, 0);
+  };
+
+  const handleConfirmFork = async () => {
+    if (!forkCheckpointId || !forkSessionName.trim() || !effectiveSession) return;
+
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      const newSessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      await api.forkFromCheckpoint(
+        forkCheckpointId,
+        effectiveSession.id,
+        effectiveSession.project_id,
+        projectPath,
+        newSessionId,
+        forkSessionName
+      );
+
+      // Open the new forked session
+      // You would need to implement navigation to the new session
+      console.log("Forked to new session:", newSessionId);
+
+      setShowForkDialog(false);
+      setForkCheckpointId(null);
+      setForkSessionName("");
+    } catch (err) {
+      console.error("Failed to fork checkpoint:", err);
+      setError("Failed to fork checkpoint");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle URL detection from terminal output
+  const handleLinkDetected = (_url: string) => {
+    // Preview disabled
+  };
+
+
+
+  // Cleanup event listeners and track mount state
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      console.log('[ClaudeCodeSession] Component unmounting, cleaning up listeners');
+      isMountedRef.current = false;
+      isListeningRef.current = false;
+
+      // Track session completion with engagement metrics
+      if (effectiveSession) {
+        trackEvent.sessionCompleted();
+
+        // Track session engagement
+        const sessionDuration = sessionStartTime.current ? Date.now() - sessionStartTime.current : 0;
+        const messageCount = messages.filter(m => m.user_message).length;
+        const toolsUsed = new Set<string>();
+        messages.forEach(msg => {
+          if (msg.type === 'assistant' && msg.message?.content) {
+            const tools = msg.message.content.filter((c: any) => c.type === 'tool_use');
+            tools.forEach((tool: any) => toolsUsed.add(tool.name));
+          }
+        });
+
+        // Calculate engagement score (0-100)
+        const engagementScore = Math.min(100,
+          (messageCount * 10) +
+          (toolsUsed.size * 5) +
+          (sessionDuration > 300000 ? 20 : sessionDuration / 15000) // 5+ min session gets 20 points
+        );
+
+        trackEvent.sessionEngagement({
+          session_duration_ms: sessionDuration,
+          messages_sent: messageCount,
+          tools_used: Array.from(toolsUsed),
+          files_modified: 0, // TODO: Track file modifications
+          engagement_score: Math.round(engagementScore)
+        });
+      }
+
+      // Clean up listeners
+      unlistenRefs.current.forEach(unlisten => unlisten());
+      unlistenRefs.current = [];
+
+      // Clear checkpoint manager when session ends
+      if (effectiveSession) {
+        api.clearCheckpointManager(effectiveSession.id).catch(err => {
+          console.error("Failed to clear checkpoint manager:", err);
+        });
+      }
+    };
+  }, [effectiveSession, projectPath]);
+
+  // Filter messages - remove null-rendering items upfront
+  const filteredMessages = useMemo(() => {
+    return displayableMessages.filter(message => {
+      // Skip system:init messages
+      if (message.type === 'system' && (message.subtype === 'init' || (message.tools && message.tools.length > 0))) {
+        return false;
+      }
+      // Skip meta messages
+      if (message.isMeta && !message.leafUuid && !message.summary) {
+        return false;
+      }
+      // Skip system messages without content
+      if (message.type === 'system' && !message.result && !message.error) {
+        return false;
+      }
+      // Skip empty assistant messages
+      if (message.type === 'assistant' && message.message && (!message.message.content || message.message.content.length === 0)) {
+        return false;
+      }
+      return true;
+    });
+  }, [displayableMessages]);
+
+  const isAtBottomRef = useRef(true);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 200;
+    setShowScrollTop(scrollTop > 200);
+    setShowScrollBottom(!isAtBottom);
+    isAtBottomRef.current = isAtBottom;
+  };
+
+  const scrollToTop = () => {
+    parentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const scrollToBottom = () => {
+    if (parentRef.current) {
+        parentRef.current.scrollTo({ top: parentRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  };
+
+  // Sticky scroll logic using ResizeObserver
+  useEffect(() => {
+    const scrollContainer = parentRef.current;
+    const contentElement = contentRef.current;
+
+    if (!scrollContainer || !contentElement) return;
+
+    const observer = new ResizeObserver(() => {
+        // If we were at the bottom (tracked by ref), allow auto-scroll
+        if (isAtBottomRef.current) {
+            scrollContainer.scrollTo({
+                top: scrollContainer.scrollHeight,
+                behavior: 'auto'
+            });
+        }
+    });
+
+    observer.observe(contentElement);
+
+    return () => observer.disconnect();
+  }, []); // Run once on mount
+
+  // Also enable auto-scroll on message array changes (for redundancy)
+  useEffect(() => {
+    if (isAtBottomRef.current && parentRef.current) {
+         parentRef.current.scrollTo({
+            top: parentRef.current.scrollHeight,
+            behavior: 'auto'
+        });
+    }
+  }, [messages, filteredMessages.length]);
+
+  // Simple non-virtualized message list - more stable than virtualization
+  const messagesList = (
+    <div
+      ref={parentRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto relative"
+      style={{ paddingBottom: '0' }}
+    >
+      <div ref={contentRef} className="w-full max-w-6xl mx-auto px-4 py-4 min-h-full">
+        {filteredMessages.map((message, index) => (
+          <div
+            key={message.uuid || message.session_id || `msg-${index}`}
+            className="mb-4"
+          >
+            <StreamMessage
+              message={message}
+              streamMessages={messages}
+              onLinkDetected={handleLinkDetected}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Loading indicator */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-4">
+          <div className="rotating-symbol text-primary" />
+        </div>
+      )}
+
+      {/* Error indicator */}
+      {error && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive w-full max-w-6xl mx-auto">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+
+
+
+  return (
+    <TooltipProvider>
+      <div className={cn("flex flex-col h-full bg-background mesh-gradient", className)}>
+        <div className="w-full h-full flex flex-col relative">
+
+          {/* Main Content Area */}
+          <div className={cn(
+            "flex-1 overflow-hidden transition-all duration-300 relative h-full",
+            showTimeline && "sm:mr-96"
+          )}>
+
+                <div className="h-full flex flex-col relative bg-background">
+                  {/* Messages Area */}
+                  <div className="flex-1 overflow-hidden relative flex flex-col">
+                    {messagesList}
+
+                    {/* Scroll Buttons */}
+                    <div className="absolute right-6 bottom-6 flex flex-col gap-2 z-20">
+                      <AnimatePresence>
+                        {showScrollTop && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.8 }}
+                          >
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-8 w-8 rounded-full shadow-md bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
+                              onClick={scrollToTop}
+                            >
+                              <ArrowUp className="h-4 w-4" />
+                            </Button>
+                          </motion.div>
+                        )}
+                        {showScrollBottom && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.8 }}
+                          >
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-8 w-8 rounded-full shadow-md bg-background hover:bg-muted text-muted-foreground hover:text-foreground"
+                              onClick={scrollToBottom}
+                            >
+                              <ArrowDown className="h-4 w-4" />
+                            </Button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+
+                    {isLoading && messages.length === 0 && (
+                      <div className="flex-1 flex items-center justify-center">
+                        <div className="flex items-center gap-3">
+                          <div className="rotating-symbol text-primary" />
+                          <span className="text-sm text-muted-foreground">
+                            {session ? "Loading session history..." : "Initializing Claude Code..."}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Docked Input Area */}
+                  <ErrorBoundary>
+                    <div className="border-t bg-muted/5 relative z-20">
+                      {/* Queued Prompts (Absolute above input) */}
+                      <AnimatePresence>
+                        {queuedPrompts.length > 0 && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 10 }}
+                            className="absolute bottom-full left-0 right-0 z-30 w-full px-4 pb-2"
+                          >
+                            <div className="bg-background/95 backdrop-blur-md border rounded-lg shadow-lg p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <div className="text-xs font-medium text-muted-foreground mb-1">
+                                  Queued Prompts ({queuedPrompts.length})
+                                </div>
+                                <TooltipSimple content={queuedPromptsCollapsed ? "Expand queue" : "Collapse queue"} side="top">
+                                  <motion.div
+                                    whileTap={{ scale: 0.97 }}
+                                    transition={{ duration: 0.15 }}
+                                  >
+                                    <Button variant="ghost" size="icon" onClick={() => setQueuedPromptsCollapsed(prev => !prev)}>
+                                      {queuedPromptsCollapsed ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                                    </Button>
+                                  </motion.div>
+                                </TooltipSimple>
+                              </div>
+                              {!queuedPromptsCollapsed && queuedPrompts.map((queuedPrompt, index) => (
+                                <motion.div
+                                  key={queuedPrompt.id}
+                                  initial={{ opacity: 0, y: 4 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0, y: -4 }}
+                                  transition={{ duration: 0.15, delay: index * 0.02 }}
+                                  className="flex items-start gap-2 bg-muted/50 rounded-md p-2"
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-xs font-medium text-muted-foreground">#{index + 1}</span>
+                                      <span className="text-xs px-1.5 py-0.5 bg-primary/10 text-primary rounded">
+                                        {queuedPrompt.model === "opus" ? "Opus" : "Sonnet"}
+                                      </span>
+                                    </div>
+                                    <p className="text-sm line-clamp-2 break-words">{queuedPrompt.prompt}</p>
+                                  </div>
+                                  <motion.div
+                                    whileTap={{ scale: 0.97 }}
+                                    transition={{ duration: 0.15 }}
+                                  >
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6 flex-shrink-0"
+                                      onClick={() => setQueuedPrompts(prev => prev.filter(p => p.id !== queuedPrompt.id))}
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </Button>
+                                  </motion.div>
+                                </motion.div>
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
+                      <FloatingPromptInput
+                        ref={floatingPromptRef}
+                        isFixed={false}
+                        defaultModel="claude-sonnet-4-5-20250929"
+                        onSend={handleSendPrompt}
+                        onCancel={handleCancelExecution}
+                        isLoading={isLoading}
+                        disabled={!projectPath}
+                        projectPath={projectPath}
+                        className="shadow-none border-none bg-transparent py-4 px-4"
+                        extraMenuItems={
+                          <div className="flex items-center gap-1">
+                            {totalTokens > 0 && (
+                              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mr-2 font-mono opacity-60">
+                                <Hash className="h-2.5 w-2.5" />
+                                <span>{totalTokens.toLocaleString()}</span>
+                              </div>
+                            )}
+                            {effectiveSession && (
+                              <TooltipSimple content="Session Timeline" side="top">
+                                <motion.div
+                                  whileTap={{ scale: 0.97 }}
+                                  transition={{ duration: 0.15 }}
+                                >
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => setShowTimeline(!showTimeline)}
+                                    className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                                  >
+                                    <GitBranch className={cn("h-3.5 w-3.5", showTimeline && "text-primary")} />
+                                  </Button>
+                                </motion.div>
+                              </TooltipSimple>
+                            )}
+                            {messages.length > 0 && (
+                              <Popover
+                                trigger={
+                                  <TooltipSimple content="Copy conversation" side="top">
+                                    <motion.div
+                                      whileTap={{ scale: 0.97 }}
+                                      transition={{ duration: 0.15 }}
+                                    >
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                                      >
+                                        <Copy className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </motion.div>
+                                  </TooltipSimple>
+                                }
+                                content={
+                                  <div className="w-44 p-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => {
+                                        handleCopyAsMarkdown();
+                                        setCopyPopoverOpen(false);
+                                      }}
+                                      className="w-full justify-start text-xs font-normal"
+                                    >
+                                      <Copy className="mr-2 h-3 w-3" />
+                                      Copy as Markdown
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => {
+                                        handleCopyAsJsonl();
+                                        setCopyPopoverOpen(false);
+                                      }}
+                                      className="w-full justify-start text-xs font-normal"
+                                    >
+                                      <FileText className="mr-2 h-3 w-3" />
+                                      Copy as JSONL
+                                    </Button>
+                                  </div>
+                                }
+                                open={copyPopoverOpen}
+                                onOpenChange={setCopyPopoverOpen}
+                                align="end"
+                                side="top"
+                              />
+                            )}
+
+                            <TooltipSimple content="Session Settings" side="top">
+                              <motion.div
+                                whileTap={{ scale: 0.97 }}
+                                transition={{ duration: 0.15 }}
+                              >
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => setShowSettings(!showSettings)}
+                                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                                >
+                                  <Wrench className={cn("h-3.5 w-3.5", showSettings && "text-primary")} />
+                                </Button>
+                              </motion.div>
+                            </TooltipSimple>
+                          </div>
+                        }
+                      />
+                    </div>
+                  </ErrorBoundary>
+                </div>
+
+          </div>
+
+
+          {/* Timeline */}
+          <AnimatePresence>
+            {showTimeline && effectiveSession && (
+              <motion.div
+                initial={{ x: "100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "100%" }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                className="fixed right-0 top-0 h-full w-full sm:w-96 bg-background border-l border-border shadow-xl z-30 overflow-hidden"
+              >
+                <div className="h-full flex flex-col">
+                  {/* Timeline Header */}
+                  <div className="flex items-center justify-between p-4 border-b border-border">
+                    <h3 className="text-lg font-semibold">Session Timeline</h3>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setShowTimeline(false)}
+                      className="h-8 w-8"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  {/* Timeline Content */}
+                  <div className="flex-1 overflow-y-auto p-4">
+                    <TimelineNavigator
+                      sessionId={effectiveSession.id}
+                      projectId={effectiveSession.project_id}
+                      projectPath={projectPath}
+                      currentMessageIndex={messages.length - 1}
+                      onCheckpointSelect={handleCheckpointSelect}
+                      onFork={handleFork}
+                      onCheckpointCreated={handleCheckpointCreated}
+                      refreshVersion={timelineVersion}
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Fork Dialog */}
+        <Dialog open={showForkDialog} onOpenChange={setShowForkDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Fork Session</DialogTitle>
+              <DialogDescription>
+                Create a new session branch from the selected checkpoint.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="fork-name">New Session Name</Label>
+                <Input
+                  id="fork-name"
+                  placeholder="e.g., Alternative approach"
+                  value={forkSessionName}
+                  onChange={(e) => setForkSessionName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !isLoading) {
+                      if (e.nativeEvent.isComposing || isIMEComposingRef.current) {
+                        return;
+                      }
+                      handleConfirmFork();
+                    }
+                  }}
+                  onCompositionStart={handleCompositionStart}
+                  onCompositionEnd={handleCompositionEnd}
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setShowForkDialog(false)}
+                disabled={isLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmFork}
+                disabled={isLoading || !forkSessionName.trim()}
+              >
+                Create Fork
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Settings Dialog */}
+        {showSettings && effectiveSession && (
+          <Dialog open={showSettings} onOpenChange={setShowSettings}>
+            <DialogContent className="max-w-2xl">
+              <CheckpointSettings
+                sessionId={effectiveSession.id}
+                projectId={effectiveSession.project_id}
+                projectPath={projectPath}
+                onClose={() => setShowSettings(false)}
+              />
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* Slash Commands Settings Dialog */}
+        {showSlashCommandsSettings && (
+          <Dialog open={showSlashCommandsSettings} onOpenChange={setShowSlashCommandsSettings}>
+            <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden">
+              <DialogHeader>
+                <DialogTitle>Slash Commands</DialogTitle>
+                <DialogDescription>
+                  Manage project-specific slash commands for {projectPath}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex-1 overflow-y-auto">
+                <SlashCommandsManager projectPath={projectPath} />
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
+
+      </div>
+    </TooltipProvider>
+  );
+};
