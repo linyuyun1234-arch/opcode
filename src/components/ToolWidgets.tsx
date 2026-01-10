@@ -137,7 +137,7 @@ export const TodoWidget: React.FC<{ todos: any[]; result?: any }> = ({ todos, re
     low: "bg-green-500/10 text-green-500 border-green-500/20"
   };
 
-  const { theme } = useTheme();
+
 
   return (
     <div className="space-y-2">
@@ -150,8 +150,7 @@ export const TodoWidget: React.FC<{ todos: any[]; result?: any }> = ({ todos, re
           <div
             key={todo.id || idx}
             className={cn(
-              "flex items-start gap-3 p-3 rounded-lg border transition-colors",
-              (theme === 'dark' || theme === 'gray') ? "bg-card/50 border-white/5" : "bg-muted/30 border-black/5",
+              "flex items-start gap-3 p-3 rounded-lg border transition-colors bg-card/50 border-border/10",
               todo.status === "completed" && "opacity-60"
             )}
           >
@@ -185,7 +184,6 @@ export const TodoWidget: React.FC<{ todos: any[]; result?: any }> = ({ todos, re
  * Widget for LS (List Directory) tool
  */
 export const LSWidget: React.FC<{ path: string; result?: any }> = ({ path, result }) => {
-  const { theme } = useTheme();
   // If we have a result, show it using the LSResultWidget
   if (result) {
     let resultContent = '';
@@ -206,8 +204,7 @@ export const LSWidget: React.FC<{ path: string; result?: any }> = ({ path, resul
     return (
       <div className="space-y-2">
         <div className={cn(
-          "flex items-center gap-2 p-3 rounded-lg border transition-colors",
-          (theme === 'dark' || theme === 'gray') ? "bg-muted/30 border-white/10" : "bg-card border-border"
+          "flex items-center gap-2 p-3 rounded-lg border transition-colors bg-card border-border"
         )}>
           <FolderOpen className="h-4 w-4 text-primary" />
           <span className="text-sm">Directory contents for:</span>
@@ -222,8 +219,7 @@ export const LSWidget: React.FC<{ path: string; result?: any }> = ({ path, resul
 
   return (
     <div className={cn(
-      "flex items-center gap-2 p-3 rounded-lg border transition-colors",
-      (theme === 'dark' || theme === 'gray') ? "bg-muted/30 border-white/10" : "bg-card border-border"
+      "flex items-center gap-2 p-3 rounded-lg border transition-colors bg-card border-border"
     )}>
       <FolderOpen className="h-4 w-4 text-primary" />
       <span className="text-sm">Listing directory:</span>
@@ -415,7 +411,6 @@ export const LSResultWidget: React.FC<{ content: string }> = ({ content }) => {
  * Widget for Read tool
  */
 export const ReadWidget: React.FC<{ filePath: string; result?: any }> = ({ filePath, result }) => {
-  const { theme } = useTheme();
   // If we have a result, show it using the ReadResultWidget
   if (result) {
     let resultContent = '';
@@ -436,8 +431,7 @@ export const ReadWidget: React.FC<{ filePath: string; result?: any }> = ({ fileP
     return (
       <div className="space-y-2">
         <div className={cn(
-          "flex items-center gap-2 p-3 rounded-lg border transition-colors",
-          (theme === 'dark' || theme === 'gray') ? "bg-muted/30 border-white/10" : "bg-card border-border"
+          "flex items-center gap-2 p-3 rounded-lg border transition-colors bg-card border-border"
         )}>
           <FileText className="h-4 w-4 text-primary" />
           <span className="text-sm">File content:</span>
@@ -452,8 +446,7 @@ export const ReadWidget: React.FC<{ filePath: string; result?: any }> = ({ fileP
 
   return (
     <div className={cn(
-      "flex items-center gap-2 p-3 rounded-lg border transition-colors",
-      (theme === 'dark' || theme === 'gray') ? "bg-muted/30 border-white/10" : "bg-card border-border"
+      "flex items-center gap-2 p-3 rounded-lg border transition-colors bg-card border-border"
     )}>
       <FileText className="h-4 w-4 text-primary" />
       <span className="text-sm">Reading file:</span>
@@ -635,8 +628,7 @@ export const ReadResultWidget: React.FC<{ content: string; filePath?: string }> 
 
       {isLargeFile && !isExpanded && (
         <div className={cn(
-          "px-4 py-3 text-xs text-muted-foreground text-center transition-colors",
-          (theme === 'dark' || theme === 'gray') ? "bg-muted/30" : "bg-[#f4f4f5]"
+          "px-4 py-3 text-xs text-muted-foreground text-center transition-colors bg-muted/30"
         )}>
           Click "Expand" to view the full file
         </div>
@@ -649,7 +641,6 @@ export const ReadResultWidget: React.FC<{ content: string; filePath?: string }> 
  * Widget for Glob tool
  */
 export const GlobWidget: React.FC<{ pattern: string; result?: any }> = ({ pattern, result }) => {
-  const { theme } = useTheme();
   // Extract result content if available
   let resultContent = '';
   let isError = false;
@@ -674,8 +665,7 @@ export const GlobWidget: React.FC<{ pattern: string; result?: any }> = ({ patter
   return (
     <div className="space-y-2">
       <div className={cn(
-        "flex items-center gap-2 p-3 rounded-lg border transition-colors",
-        (theme === 'dark' || theme === 'gray') ? "bg-muted/30 border-white/10" : "bg-card border-border"
+        "flex items-center gap-2 p-3 rounded-lg border transition-colors bg-card border-border"
       )}>
         <Search className="h-4 w-4 text-primary" />
         <span className="text-sm">Searching for pattern:</span>

@@ -14,4 +14,24 @@ import { twMerge } from "tailwind-merge";
  */
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+/**
+ * Calculates a map of tool results from a list of messages.
+ * Used to optimize StreamMessage rendering performance.
+ */
+export function calculateToolResultsMap(messages: any[]): Map<string, any> {
+  const results = new Map<string, any>();
+  if (!Array.isArray(messages)) return results;
+
+  messages.forEach(msg => {
+    if (msg.type === "user" && msg.message?.content && Array.isArray(msg.message.content)) {
+      msg.message.content.forEach((content: any) => {
+        if (content.type === "tool_result" && content.tool_use_id) {
+          results.set(content.tool_use_id, content);
+        }
+      });
+    }
+  });
+  return results;
 } 

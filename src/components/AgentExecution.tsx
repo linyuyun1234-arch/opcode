@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { api, type Agent, type ModelInfo } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, calculateToolResultsMap } from "@/lib/utils";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { StreamMessage } from "./StreamMessage";
 import { ExecutionControlBar } from "./ExecutionControlBar";
@@ -217,6 +217,9 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
       return true;
     });
   }, [messages]);
+
+  // Pre-calculate tool results map
+  const toolResultsMap = React.useMemo(() => calculateToolResultsMap(messages), [messages]);
 
   // Virtualizers for efficient, smooth scrolling of potentially very long outputs
   const rowVirtualizer = useVirtualizer({
@@ -793,7 +796,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
                           style={{ top: virtualItem.start }}
                         >
                           <ErrorBoundary>
-                            <StreamMessage message={message} streamMessages={messages} />
+                            <StreamMessage message={message} toolResults={toolResultsMap} />
                           </ErrorBoundary>
                         </motion.div>
                       );
@@ -934,7 +937,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
                         style={{ top: virtualItem.start }}
                       >
                         <ErrorBoundary>
-                          <StreamMessage message={message} streamMessages={messages} />
+                          <StreamMessage message={message} toolResults={toolResultsMap} />
                         </ErrorBoundary>
                       </motion.div>
                     );

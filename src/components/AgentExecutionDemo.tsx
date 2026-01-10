@@ -1,6 +1,7 @@
 import React from "react";
 import { StreamMessage } from "./StreamMessage";
 import type { ClaudeStreamMessage } from "./AgentExecution";
+import { calculateToolResultsMap } from "@/lib/utils";
 
 /**
  * Demo component showing all the different message types and tools
@@ -174,7 +175,7 @@ body {
       <h1 className="text-2xl font-bold mb-6">Agent Execution Demo</h1>
       
       {messages.map((message, idx) => (
-        <StreamMessage key={idx} message={message} streamMessages={messages} />
+        <StreamMessage key={idx} message={message} toolResults={calculateToolResultsMap(messages)} />
       ))}
     </div>
   );

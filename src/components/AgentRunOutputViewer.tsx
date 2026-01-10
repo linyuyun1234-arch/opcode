@@ -27,6 +27,7 @@ import { formatISOTimestamp } from '@/lib/date-utils';
 import { AGENT_ICONS } from './CCAgents';
 import type { ClaudeStreamMessage } from './AgentExecution';
 import { useTabState } from '@/hooks/useTabState';
+import { calculateToolResultsMap } from "@/lib/utils";
 
 interface AgentRunOutputViewerProps {
   /**
@@ -508,6 +509,9 @@ export function AgentRunOutputViewer({
     });
   }, [messages]);
 
+  // Pre-calculate tool results map
+  const toolResultsMap = useMemo(() => calculateToolResultsMap(messages), [messages]);
+
   const renderIcon = (iconName: string) => {
     const Icon = AGENT_ICONS[iconName as keyof typeof AGENT_ICONS] || Bot;
     return <Icon className="h-5 w-5" />;
@@ -543,7 +547,7 @@ export function AgentRunOutputViewer({
 
   return (
     <>
-      <div className={`h-full flex flex-col ${className || ''}`}>
+      <div className={`h-full flex flex-col neu-card ${className || ''}`}>
         <Card className="h-full flex flex-col">
           <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-4">
@@ -692,7 +696,7 @@ export function AgentRunOutputViewer({
                       transition={{ duration: 0.2 }}
                     >
                       <ErrorBoundary>
-                        <StreamMessage message={message} streamMessages={messages} />
+                        <StreamMessage message={message} toolResults={toolResultsMap} />
                       </ErrorBoundary>
                     </motion.div>
                   ))}
@@ -799,7 +803,7 @@ export function AgentRunOutputViewer({
                         transition={{ duration: 0.2 }}
                       >
                         <ErrorBoundary>
-                          <StreamMessage message={message} streamMessages={messages} />
+                          <StreamMessage message={message} toolResults={toolResultsMap} />
                         </ErrorBoundary>
                       </motion.div>
                     ))}

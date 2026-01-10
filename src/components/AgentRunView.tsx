@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Popover } from "@/components/ui/popover";
 import { api, type AgentRunWithMetrics } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, calculateToolResultsMap } from "@/lib/utils";
 import { formatISOTimestamp } from "@/lib/date-utils";
 import { StreamMessage } from "./StreamMessage";
 import { AGENT_ICONS } from "./CCAgents";
@@ -57,6 +57,8 @@ export const AgentRunView: React.FC<AgentRunViewProps> = ({
   useEffect(() => {
     loadRun();
   }, [runId]);
+
+  const toolResultsMap = React.useMemo(() => calculateToolResultsMap(messages), [messages]);
 
   const loadRun = async () => {
     try {
@@ -373,7 +375,7 @@ export const AgentRunView: React.FC<AgentRunViewProps> = ({
                 transition={{ duration: 0.2, delay: index * 0.02 }}
               >
                 <ErrorBoundary>
-                  <StreamMessage message={message} streamMessages={messages} />
+                  <StreamMessage message={message} toolResults={toolResultsMap} />
                 </ErrorBoundary>
               </motion.div>
             ))}

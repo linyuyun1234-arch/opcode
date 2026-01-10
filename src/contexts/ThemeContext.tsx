@@ -37,28 +37,29 @@ const THEME_STORAGE_KEY = 'theme_preference';
 const CUSTOM_COLORS_STORAGE_KEY = 'theme_custom_colors';
 
 // Default custom theme colors (based on current dark theme)
+// Default custom theme colors (based on current dark theme)
 const DEFAULT_CUSTOM_COLORS: CustomThemeColors = {
-  background: 'oklch(0.12 0.01 240)',
-  foreground: 'oklch(0.98 0.01 240)',
-  card: 'oklch(0.14 0.01 240)',
-  cardForeground: 'oklch(0.98 0.01 240)',
-  primary: 'oklch(0.98 0.01 240)',
-  primaryForeground: 'oklch(0.12 0.01 240)',
-  secondary: 'oklch(0.16 0.01 240)',
-  secondaryForeground: 'oklch(0.98 0.01 240)',
-  muted: 'oklch(0.16 0.01 240)',
-  mutedForeground: 'oklch(0.65 0.01 240)',
-  accent: 'oklch(0.16 0.01 240)',
-  accentForeground: 'oklch(0.98 0.01 240)',
-  destructive: 'oklch(0.6 0.2 25)',
-  destructiveForeground: 'oklch(0.98 0.01 240)',
-  border: 'oklch(0.16 0.01 240)',
-  input: 'oklch(0.16 0.01 240)',
-  ring: 'oklch(0.98 0.01 240)',
+  background: '#f0f4f8', /* Clay background */
+  foreground: '#2d3748',
+  card: '#ffffff',
+  cardForeground: '#2d3748',
+  primary: '#6366f1',
+  primaryForeground: '#ffffff',
+  secondary: '#e2e8f0',
+  secondaryForeground: '#2d3748',
+  muted: '#e2e8f0',
+  mutedForeground: '#64748b',
+  accent: '#ffffff',
+  accentForeground: '#6366f1',
+  destructive: '#ef4444',
+  destructiveForeground: '#ffffff',
+  border: 'transparent',
+  input: '#e2e8f0',
+  ring: '#6366f1',
 };
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [theme, setThemeState] = useState<ThemeMode>('dark');
+  const [theme, setThemeState] = useState<ThemeMode>('light');
   const [customColors, setCustomColorsState] = useState<CustomThemeColors>(DEFAULT_CUSTOM_COLORS);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -74,9 +75,9 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setThemeState(themeMode);
           await applyTheme(themeMode, customColors);
         } else {
-          // No saved preference: apply dark as the default theme
-          setThemeState('dark');
-          await applyTheme('dark', customColors);
+          // No saved preference: apply light as the default theme
+          setThemeState('light');
+          await applyTheme('light', customColors);
         }
 
         // Load custom colors

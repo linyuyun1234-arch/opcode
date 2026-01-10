@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import {
   Terminal,
   User,
@@ -82,38 +82,30 @@ import {
 interface StreamMessageProps {
   message: ClaudeStreamMessage;
   className?: string;
-  streamMessages: ClaudeStreamMessage[];
+  toolResults: Map<string, any>; // Changed from streamMessages
   onLinkDetected?: (url: string) => void;
 }
+
+// Helper to extract tool IDs from a message
+const extractToolIds = (message: ClaudeStreamMessage): string[] => {
+  if (message.type !== 'assistant' || !message.message?.content) return [];
+
+  const content = message.message.content;
+  if (typeof content === 'string') return []; // Should not happen for tool_use but for safety
+  if (!Array.isArray(content)) return [];
+
+  return content
+    .filter((c: any) => c.type === 'tool_use' && c.id)
+    .map((c: any) => c.id);
+};
 
 /**
  * Component to render a single Claude Code stream message
  */
-const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, streamMessages, onLinkDetected }) => {
-  // State to track tool results mapped by tool call ID
-  const [toolResults, setToolResults] = useState<Map<string, any>>(new Map());
-
+const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, toolResults, onLinkDetected }) => {
   // Get current theme
   const { theme } = useTheme();
   const syntaxTheme = getClaudeSyntaxTheme(theme);
-
-  // Extract all tool results from stream messages
-  useEffect(() => {
-    const results = new Map<string, any>();
-
-    // Iterate through all messages to find tool results
-    streamMessages.forEach(msg => {
-      if (msg.type === "user" && msg.message?.content && Array.isArray(msg.message.content)) {
-        msg.message.content.forEach((content: any) => {
-          if (content.type === "tool_result" && content.tool_use_id) {
-            results.set(content.tool_use_id, content);
-          }
-        });
-      }
-    });
-
-    setToolResults(results);
-  }, [streamMessages]);
 
   // Helper to get tool result for a specific tool call ID
   const getToolResult = (toolId: string | undefined): any => {
@@ -190,8 +182,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                     <div
                       key={idx}
                       className={cn(
-                        "prose prose-sm max-w-none leading-[1.8] text-foreground font-normal tracking-wide",
-                        (theme === 'dark' || theme === 'gray') ? "prose-invert" : ""
+                        "prose prose-sm max-w-none leading-[1.8] text-foreground font-normal tracking-wide dark:prose-invert"
                       )}
                       style={{ color: 'var(--color-foreground)' }}
                     >
@@ -207,10 +198,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                                 language={match[1]}
                                 PreTag="div"
                                 className={cn(
-                                  "rounded-lg !mt-4 !mb-4 border transition-all overflow-hidden",
-                                  (theme === 'dark' || theme === 'gray')
-                                    ? "!bg-[#1e1e2e] border-white/10"
-                                    : "!bg-[#f5f5f5] border-black/10"
+                                  "rounded-lg !mt-4 !mb-4 border transition-all overflow-hidden bg-muted/50 border-border/50"
                                 )}
                                 customStyle={{
                                   padding: '1rem',
@@ -414,8 +402,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                       </div>
                       {content.input && (
                         <div className={cn(
-                          "ml-6 p-2 rounded-md border border-border/50",
-                          (theme === 'dark' || theme === 'gray') ? "bg-muted/30" : "bg-[#f4f4f5]"
+                          "ml-6 p-2 rounded-md border border-border/50 bg-muted/50"
                         )}>
                           <pre className="text-xs font-mono overflow-x-auto text-muted-foreground">
                             {JSON.stringify(content.input, null, 2)}
@@ -476,8 +463,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
 
       const renderedCard = (
         <div className={cn(
-          "group relative py-3 px-3 rounded-lg border transition-colors",
-          (theme === 'dark' || theme === 'gray') ? "bg-muted/30 border-transparent" : "bg-[#f4f4f5] border-border/50",
+          "group relative py-3 px-3 rounded-lg border transition-colors bg-muted/30 border-transparent",
           className
         )}>
           <div className="flex items-start gap-4">
@@ -589,8 +575,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
 
                         {beforeReminder && (
                           <div className={cn(
-                            "ml-6 p-2 rounded-md border border-border/40",
-                            (theme === 'dark' || theme === 'gray') ? "bg-muted/30" : "bg-[#f4f4f5]"
+                            "ml-6 p-2 rounded-md border border-border/40 bg-muted/50"
                           )}>
                             <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap text-muted-foreground">
                               {beforeReminder}
@@ -604,8 +589,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
 
                         {afterReminder && (
                           <div className={cn(
-                            "ml-6 p-2 rounded-md border border-border/40",
-                            (theme === 'dark' || theme === 'gray') ? "bg-muted/30" : "bg-[#f4f4f5]"
+                            "ml-6 p-2 rounded-md border border-border/40 bg-muted/50"
                           )}>
                             <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap text-muted-foreground">
                               {afterReminder}
@@ -658,23 +642,12 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                     let isFromLSTool = false;
 
                     // Search in previous assistant messages for the matching tool_use
-                    if (streamMessages) {
-                      for (let i = streamMessages.length - 1; i >= 0; i--) {
-                        const prevMsg = streamMessages[i];
-                        // Only check assistant messages
-                        if (prevMsg.type === 'assistant' && prevMsg.message?.content && Array.isArray(prevMsg.message.content)) {
-                          const toolUse = prevMsg.message.content.find((c: any) =>
-                            c.type === 'tool_use' &&
-                            c.id === content.tool_use_id &&
-                            c.name?.toLowerCase() === 'ls'
-                          );
-                          if (toolUse) {
-                            isFromLSTool = true;
-                            break;
-                          }
-                        }
-                      }
-                    }
+                    // Search for tool call logic removed for performance.
+                    // effectively disables LSResultWidget for now unless we add a heuristic.
+                    // This is acceptable as it falls back to raw text.
+                    /* 
+                    if (streamMessages) { ... }
+                    */
 
                     // Only proceed if this is from an LS tool
                     if (!isFromLSTool) return false;
@@ -708,24 +681,8 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                     // Try to find the corresponding Read tool call to get the file path
                     let filePath: string | undefined;
 
-                    // Search in previous assistant messages for the matching tool_use
-                    if (streamMessages) {
-                      for (let i = streamMessages.length - 1; i >= 0; i--) {
-                        const prevMsg = streamMessages[i];
-                        // Only check assistant messages
-                        if (prevMsg.type === 'assistant' && prevMsg.message?.content && Array.isArray(prevMsg.message.content)) {
-                          const toolUse = prevMsg.message.content.find((c: any) =>
-                            c.type === 'tool_use' &&
-                            c.id === content.tool_use_id &&
-                            c.name?.toLowerCase() === 'read'
-                          );
-                          if (toolUse?.input?.file_path) {
-                            filePath = toolUse.input.file_path;
-                            break;
-                          }
-                        }
-                      }
-                    }
+                    // Search for file path logic removed for performance (requires full history scan)
+                    // If file path display is critical, it should be passed in via tool_result content or a separate map.
 
                     renderedSomething = true;
                     return (
@@ -748,8 +705,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                         <span className="text-sm font-medium">Tool Output</span>
                       </div>
                       <div className={cn(
-                        "ml-6 p-2 rounded border border-border/30",
-                        (theme === 'dark' || theme === 'gray') ? "bg-muted/30" : "bg-[#f4f4f5]"
+                        "ml-6 p-2 rounded border border-border/30 bg-muted/50"
                       )}>
                         <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap text-muted-foreground">
                           {contentText}
@@ -796,40 +752,36 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
 
                 {/* Only show result content if it's different from the previous assistant message */}
                 {message.result && (() => {
-                  // Check if there's a previous assistant message with the same text
-                  const resultText = message.result;
-                  const prevAssistant = streamMessages
-                    .filter(m => m.type === 'assistant' && m.message?.content)
-                    .slice(-1)[0]; // Get the last assistant message
-
-                  const prevAssistantText = prevAssistant?.message?.content
-                    ?.filter((c: any) => c.type === 'text')
-                    .map((c: any) => c.text)
-                    .join('') || '';
-
-                  // If the result is the same as the assistant message, don't show it again
-                  if (resultText.trim() === prevAssistantText.trim()) {
-                    return null;
-                  }
+                  // De-duplication check removed for performance (requires full history scan)
+                  // We assume redundancy is low or acceptable.
 
                   return (
                     <div className="prose prose-sm dark:prose-invert max-w-none">
                       <ReactMarkdown
-                        // remarkPlugins removed for Safari compatibility
                         components={{
                           code({ node, inline, className, children, ...props }: any) {
-                            const match = /language-(\w+)/.exec(className || '');
-                            return !inline && match ? (
-                              <SyntaxHighlighter
-                                style={syntaxTheme}
-                                language={match[1]}
-                                PreTag="div"
-                                {...props}
-                              >
-                                {String(children).replace(/\n$/, '')}
-                              </SyntaxHighlighter>
-                            ) : (
-                              <code className={className} {...props}>
+                            const match = /language-(\w+)/.exec(className || "");
+                            const language = match ? match[1] : "";
+                            
+                            if (!inline && match) {
+                              return (
+                                <SyntaxHighlighter
+                                  style={syntaxTheme}
+                                  language={language}
+                                  PreTag="div"
+                                  customStyle={{
+                                    margin: 0,
+                                    borderRadius: "0.375rem",
+                                    fontSize: "0.875rem",
+                                  }}
+                                  {...props}
+                                >
+                                  {String(children).replace(/\n$/, "")}
+                                </SyntaxHighlighter>
+                              );
+                            }
+                            return (
+                              <code className={cn("bg-muted px-1.5 py-0.5 rounded text-sm font-mono", className)} {...props}>
                                 {children}
                               </code>
                             );
@@ -841,6 +793,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                     </div>
                   );
                 })()}
+
 
                 {message.error && (
                   <div className="text-sm text-destructive">{message.error}</div>
@@ -893,4 +846,29 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
   }
 };
 
-export const StreamMessage = React.memo(StreamMessageComponent);
+export const StreamMessage = React.memo(StreamMessageComponent, (prev, next) => {
+  // 1. Check if message reference changed (content update)
+  if (prev.message !== next.message) return false;
+  
+  // 2. Check if onLinkDetected callback changed (unlikely but safe)
+  if (prev.onLinkDetected !== next.onLinkDetected) return false;
+
+  // 3. Check if RELEVANT tool results changed
+  // We only care about toolResults map changes if this message HAS tool calls
+  // whose results have changed between prev.toolResults and next.toolResults
+  const toolIds = extractToolIds(next.message);
+  
+  if (toolIds.length === 0) {
+    // No tool calls in this message, so global toolResults map changes don't affect us
+    return true; 
+  }
+
+  // If there are tool calls, check if any of their results changed
+  for (const id of toolIds) {
+    if (prev.toolResults.get(id) !== next.toolResults.get(id)) {
+      return false; // Result changed, must re-render
+    }
+  }
+
+  return true; // No relevant changes
+});

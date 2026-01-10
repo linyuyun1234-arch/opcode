@@ -746,17 +746,17 @@ pub async fn cancel_claude_execution(
         log::warn!("No active Claude process found to cancel");
     }
 
-    // Always emit cancellation events for UI consistency
+    // 发送取消事件 - 只发送一个以避免重复
     if let Some(sid) = session_id {
         let _ = app.emit(&format!("claude-cancelled:{}", sid), true);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let _ = app.emit(&format!("claude-complete:{}", sid), false);
+    } else {
+        // 只有在没有 session_id 时才发送通用事件
+        let _ = app.emit("claude-cancelled", true);
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let _ = app.emit("claude-complete", false);
     }
-
-    // Also emit generic events for backward compatibility
-    let _ = app.emit("claude-cancelled", true);
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    let _ = app.emit("claude-complete", false);
 
     if killed {
         log::info!("Claude process cancellation completed successfully");
@@ -932,11 +932,14 @@ async fn spawn_claude_process(
             }
 
             // Emit the line to the frontend with session isolation if we have session ID
+            // 只发送一个事件以避免前端收到重复消息
             if let Some(ref session_id) = *session_id_holder_clone.lock().unwrap() {
+                // 发送会话特定事件（前端优先监听这个）
                 let _ = app_handle.emit(&format!("claude-output:{}", session_id), &line);
+            } else {
+                // 只有在没有会话 ID 时才发送通用事件（用于初始化阶段）
+                let _ = app_handle.emit("claude-output", &line);
             }
-            // Also emit to the generic event for backward compatibility
-            let _ = app_handle.emit("claude-output", &line);
         }
     });
 
@@ -956,12 +959,12 @@ async fn spawn_claude_process(
             }
 
             log::error!("Claude stderr: {}", line);
-            // Emit error lines to the frontend with session isolation if we have session ID
+            // Emit error lines to the frontend - 只发送一个事件避免重复
             if let Some(ref session_id) = *session_id_holder_clone2.lock().unwrap() {
                 let _ = app_handle_stderr.emit(&format!("claude-error:{}", session_id), &line);
+            } else {
+                let _ = app_handle_stderr.emit("claude-error", &line);
             }
-            // Also emit to the generic event for backward compatibility
-            let _ = app_handle_stderr.emit("claude-error", &line);
         }
     });
 
@@ -986,9 +989,9 @@ async fn spawn_claude_process(
                     if let Some(ref session_id) = *session_id_holder_clone3.lock().unwrap() {
                         let _ = app_handle_wait
                             .emit(&format!("claude-complete:{}", session_id), status.success());
+                    } else {
+                        let _ = app_handle_wait.emit("claude-complete", status.success());
                     }
-                    // Also emit to the generic event for backward compatibility
-                    let _ = app_handle_wait.emit("claude-complete", status.success());
                 }
                 Err(e) => {
                     log::error!("Failed to wait for Claude process: {}", e);
@@ -997,9 +1000,9 @@ async fn spawn_claude_process(
                     if let Some(ref session_id) = *session_id_holder_clone3.lock().unwrap() {
                         let _ =
                             app_handle_wait.emit(&format!("claude-complete:{}", session_id), false);
+                    } else {
+                        let _ = app_handle_wait.emit("claude-complete", false);
                     }
-                    // Also emit to the generic event for backward compatibility
-                    let _ = app_handle_wait.emit("claude-complete", false);
                 }
             }
         }

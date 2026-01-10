@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Toast, ToastContainer } from '@/components/ui/toast';
 import { Popover } from '@/components/ui/popover';
 import { api } from '@/lib/api';
+import { calculateToolResultsMap } from "@/lib/utils";
 import { useOutputCache } from '@/lib/outputCache';
 import type { AgentRun } from '@/lib/api';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -386,6 +387,8 @@ export function SessionOutputViewer({ session, onClose, className }: SessionOutp
     });
   }, [messages]);
 
+  const toolResultsMap = useMemo(() => calculateToolResultsMap(messages), [messages]);
+
   return (
     <>
       <motion.div
@@ -395,7 +398,7 @@ export function SessionOutputViewer({ session, onClose, className }: SessionOutp
         transition={{ duration: 0.2 }}
         className={`${isFullscreen ? 'fixed inset-0 z-50 bg-background' : ''} ${className}`}
       >
-        <Card className={`h-full ${isFullscreen ? 'rounded-none border-0' : ''}`}>
+        <Card className={`h-full neu-card ${isFullscreen ? 'rounded-none border-0' : ''}`}>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
@@ -543,7 +546,7 @@ export function SessionOutputViewer({ session, onClose, className }: SessionOutp
                           transition={{ duration: 0.2 }}
                         >
                           <ErrorBoundary>
-                            <StreamMessage message={message} streamMessages={messages} />
+                            <StreamMessage message={message} toolResults={toolResultsMap} />
                           </ErrorBoundary>
                         </motion.div>
                       ))}
@@ -667,7 +670,7 @@ export function SessionOutputViewer({ session, onClose, className }: SessionOutp
                         transition={{ duration: 0.2 }}
                       >
                         <ErrorBoundary>
-                          <StreamMessage message={message} streamMessages={messages} />
+                          <StreamMessage message={message} toolResults={toolResultsMap} />
                         </ErrorBoundary>
                       </motion.div>
                     ))}

@@ -1043,10 +1043,7 @@ const FloatingPromptInputInner = (
             </AnimatePresence>
 
             <div
-              className={cn(
-                "relative group rounded-2xl border border-border shadow-lg",
-                "bg-card"
-              )}
+              className="relative group neu-card"
             >
               <div className="flex flex-col">
                 {/* Input Area */}
@@ -1208,7 +1205,7 @@ const FloatingPromptInputInner = (
                   </div>
 
                   {/* Textarea Area */}
-                  <div className="flex-1 relative pt-1">
+                  <div className="flex-1 relative p-2 neu-pressed rounded-xl">
                     <Textarea
                       ref={textareaRef}
                       value={prompt}

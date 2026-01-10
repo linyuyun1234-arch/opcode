@@ -1502,6 +1502,22 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     }
   }, [messages, filteredMessages.length]);
 
+  // Pre-calculate tool results map to avoid O(N^2) checks in StreamMessage
+  const toolResultsMap = useMemo(() => {
+    const results = new Map<string, any>();
+    // Iterate through all messages to find tool results
+    messages.forEach(msg => {
+      if (msg.type === "user" && msg.message?.content && Array.isArray(msg.message.content)) {
+        msg.message.content.forEach((content: any) => {
+          if (content.type === "tool_result" && content.tool_use_id) {
+            results.set(content.tool_use_id, content);
+          }
+        });
+      }
+    });
+    return results;
+  }, [messages]);
+
   // Simple non-virtualized message list - more stable than virtualization
   const messagesList = (
     <div
@@ -1518,7 +1534,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           >
             <StreamMessage
               message={message}
-              streamMessages={messages}
+              toolResults={toolResultsMap}
               onLinkDetected={handleLinkDetected}
             />
           </div>
@@ -1549,12 +1565,13 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
         <div className="w-full h-full flex flex-col relative">
 
           {/* Main Content Area */}
+          {/* Main Content Area */}
           <div className={cn(
-            "flex-1 overflow-hidden transition-all duration-300 relative h-full",
+            "flex-1 overflow-hidden transition-[margin] duration-300 relative h-full flex flex-col p-6",
             showTimeline && "sm:mr-96"
           )}>
 
-                <div className="h-full flex flex-col relative bg-background">
+                <div className="flex-1 flex flex-col relative neu-card overflow-hidden">
                   {/* Messages Area */}
                   <div className="flex-1 overflow-hidden relative flex flex-col">
                     {messagesList}

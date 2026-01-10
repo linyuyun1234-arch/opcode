@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { StreamMessage } from '../StreamMessage';
 import { Terminal } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, calculateToolResultsMap } from '@/lib/utils';
 import type { ClaudeStreamMessage } from '../AgentExecution';
 
 interface MessageListProps {
@@ -24,6 +24,9 @@ export const MessageList: React.FC<MessageListProps> = React.memo(({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const userHasScrolledRef = useRef(false);
+
+  // Pre-calculate tool results map
+  const toolResultsMap = React.useMemo(() => calculateToolResultsMap(messages), [messages]);
 
   // Virtual scrolling setup
   const virtualizer = useVirtualizer({
@@ -126,7 +129,7 @@ export const MessageList: React.FC<MessageListProps> = React.memo(({
                 <div className="px-4 py-2">
                   <StreamMessage 
                     message={message}
-                    streamMessages={messages}
+                    toolResults={toolResultsMap}
                     onLinkDetected={onLinkDetected}
                   />
                 </div>

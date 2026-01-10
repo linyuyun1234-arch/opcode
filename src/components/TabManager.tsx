@@ -307,7 +307,6 @@ export const TabManager: React.FC<TabManagerProps> = ({ className }) => {
   return (
     <div
       className={cn("flex items-stretch relative border-b border-border/50", className)}
-      style={{ backgroundColor: 'color-mix(in srgb, var(--color-muted), transparent 85%)' }}
     >
       {/* Left fade gradient */}
       {showLeftScroll && (
@@ -376,7 +375,6 @@ export const TabManager: React.FC<TabManagerProps> = ({ className }) => {
                 ? "hover:bg-muted/60 text-muted-foreground hover:text-foreground"
                 : "opacity-50 cursor-not-allowed text-muted-foreground"
             )}
-            style={{ backgroundColor: 'var(--color-background, rgba(0,0,0,0.5))', opacity: 0.6 }}
             title={canAddTab() ? "New project (Ctrl+T)" : "Maximum tabs reached"}
           >
             <Plus className="w-4 h-4" />

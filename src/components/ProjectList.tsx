@@ -143,7 +143,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
         <div className="flex-1 overflow-y-auto p-6">
           {/* Recent projects section */}
           {displayedProjects.length > 0 ? (
-            <Card className="p-0 border border-border bg-card shadow-sm rounded-xl overflow-hidden">
+            <Card className="p-0 neu-card overflow-hidden">
               <div className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-xl font-semibold tracking-tight">Recent Projects</h2>
