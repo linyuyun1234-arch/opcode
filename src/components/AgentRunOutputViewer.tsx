@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Maximize2,
@@ -11,9 +11,14 @@ import {
   Clock,
   Hash,
   DollarSign,
-  StopCircle
+  StopCircle,
+  Search,
+  X,
+  ArrowDown,
+  ChevronUp
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Toast, ToastContainer } from '@/components/ui/toast';
@@ -27,7 +32,9 @@ import { formatISOTimestamp } from '@/lib/date-utils';
 import { AGENT_ICONS } from './CCAgents';
 import type { ClaudeStreamMessage } from './AgentExecution';
 import { useTabState } from '@/hooks/useTabState';
-import { calculateToolResultsMap } from "@/lib/utils";
+import { calculateToolResultsMap, cn } from "@/lib/utils";
+import { TokenMonitor } from './TokenMonitor';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 interface AgentRunOutputViewerProps {
   /**
@@ -68,6 +75,17 @@ export function AgentRunOutputViewer({
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
   const [hasUserScrolled, setHasUserScrolled] = useState(false);
+  
+  // 搜索状态
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
+  
+  // 智能滚动状态
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [newMessagesCount, setNewMessagesCount] = useState(0);
+  const prevMessagesLengthRef = useRef(0);
 
   // Track whether we're in the initial load phase
   const isInitialLoadRef = useRef(true);
@@ -512,6 +530,123 @@ export function AgentRunOutputViewer({
   // Pre-calculate tool results map
   const toolResultsMap = useMemo(() => calculateToolResultsMap(messages), [messages]);
 
+  // 搜索过滤消息
+  const filteredMessages = useMemo(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return displayableMessages;
+    }
+    
+    const lowerQuery = searchQuery.toLowerCase();
+    const results: number[] = [];
+    
+    const filtered = displayableMessages.filter((msg, index) => {
+      let matches = false;
+      
+      // 搜索文本内容
+      if (msg.type === 'assistant' || msg.type === 'user') {
+        const content = msg.message?.content;
+        if (Array.isArray(content)) {
+          matches = content.some((c: any) => {
+            if (c.type === 'text') {
+              return c.text?.toLowerCase().includes(lowerQuery);
+            }
+            if (c.type === 'tool_use') {
+              return c.name?.toLowerCase().includes(lowerQuery) || 
+                     JSON.stringify(c.input).toLowerCase().includes(lowerQuery);
+            }
+            if (c.type === 'tool_result') {
+              const resultContent = typeof c.content === 'string' ? c.content : JSON.stringify(c.content);
+              return resultContent.toLowerCase().includes(lowerQuery);
+            }
+            return false;
+          });
+        }
+      }
+      
+      // 搜索结果消息
+      if (msg.type === 'result') {
+        matches = msg.result?.toLowerCase().includes(lowerQuery) || 
+                  msg.error?.toLowerCase().includes(lowerQuery);
+      }
+      
+      if (matches) {
+        results.push(index);
+      }
+      
+      return matches;
+    });
+    
+    setSearchResults(results);
+    return filtered;
+  }, [displayableMessages, searchQuery]);
+
+  // 虚拟化配置
+  const parentRef = isFullscreen ? fullscreenScrollRef : scrollAreaRef;
+  
+  const rowVirtualizer = useVirtualizer({
+    count: filteredMessages.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 120,
+    overscan: 5,
+  });
+
+  // 智能滚动逻辑
+  useEffect(() => {
+    const newLength = filteredMessages.length;
+    const prevLength = prevMessagesLengthRef.current;
+    
+    if (newLength > prevLength) {
+      if (!hasUserScrolled) {
+        // 用户没有向上滚动，自动滚动到底部
+        rowVirtualizer.scrollToIndex(filteredMessages.length - 1, { align: 'end', behavior: 'smooth' });
+      } else {
+        // 用户已向上滚动，累计新消息计数
+        setNewMessagesCount(prev => prev + (newLength - prevLength));
+      }
+    }
+    
+    prevMessagesLengthRef.current = newLength;
+  }, [filteredMessages.length, hasUserScrolled, rowVirtualizer]);
+
+  // 滚动处理
+  const handleSmartScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const { scrollTop, scrollHeight, clientHeight } = target;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    
+    const isScrolledUp = distanceFromBottom > 100;
+    setHasUserScrolled(isScrolledUp);
+    setShowScrollButton(isScrolledUp);
+    
+    if (!isScrolledUp) {
+      setNewMessagesCount(0);
+    }
+  }, []);
+
+  // 滚动到底部
+  const scrollToBottomSmart = useCallback(() => {
+    rowVirtualizer.scrollToIndex(filteredMessages.length - 1, { align: 'end', behavior: 'smooth' });
+    setHasUserScrolled(false);
+    setShowScrollButton(false);
+    setNewMessagesCount(0);
+  }, [rowVirtualizer, filteredMessages.length]);
+
+  // 搜索结果导航
+  const navigateSearch = useCallback((direction: 'prev' | 'next') => {
+    if (searchResults.length === 0) return;
+    
+    let newIndex: number;
+    if (direction === 'next') {
+      newIndex = (currentSearchIndex + 1) % searchResults.length;
+    } else {
+      newIndex = (currentSearchIndex - 1 + searchResults.length) % searchResults.length;
+    }
+    
+    setCurrentSearchIndex(newIndex);
+    rowVirtualizer.scrollToIndex(newIndex, { align: 'center', behavior: 'smooth' });
+  }, [searchResults.length, currentSearchIndex, rowVirtualizer]);
+
   const renderIcon = (iconName: string) => {
     const Icon = AGENT_ICONS[iconName as keyof typeof AGENT_ICONS] || Bot;
     return <Icon className="h-5 w-5" />;
@@ -592,9 +727,81 @@ export function AgentRunOutputViewer({
                       </div>
                     )}
                   </div>
+                  
+                  {/* Token 监控面板 */}
+                  {run.metrics && run.metrics.total_tokens && (
+                    <div className="mt-3">
+                      <TokenMonitor
+                        usage={{
+                          // 估算输入/输出分布（通常输入占70%，输出占30%）
+                          inputTokens: Math.round((run.metrics.total_tokens || 0) * 0.7),
+                          outputTokens: Math.round((run.metrics.total_tokens || 0) * 0.3)
+                        }}
+                        model={run.model}
+                        isStreaming={run.status === 'running'}
+                        variant="minimal"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="flex items-center gap-1">
+              {/* 搜索栏 */}
+              <div className="flex items-center gap-2">
+                {isSearchOpen ? (
+                  <div className="flex items-center gap-1 animate-in fade-in slide-in-from-right-4 duration-200">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                      <Input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="搜索消息..."
+                        className="h-8 w-48 pl-8 pr-8"
+                        autoFocus
+                      />
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                    {searchResults.length > 0 && (
+                      <div className="flex items-center gap-1">
+                        <Badge variant="secondary" className="text-xs tabular-nums">
+                          {currentSearchIndex + 1} / {searchResults.length}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => navigateSearch('prev')}
+                          disabled={searchResults.length <= 1}
+                        >
+                          <ChevronUp className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => navigateSearch('next')}
+                          disabled={searchResults.length <= 1}
+                        >
+                          <ChevronDown className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={() => { setIsSearchOpen(false); setSearchQuery(''); }} className="h-8 w-8 p-0">
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Button variant="ghost" size="sm" onClick={() => setIsSearchOpen(true)} className="h-8 px-2" title="搜索">
+                    <Search className="h-4 w-4" />
+                  </Button>
+                )}
+
                 <Popover
                   trigger={
                     <Button
@@ -669,7 +876,7 @@ export function AgentRunOutputViewer({
               </div>
             </div>
           </CardHeader>
-          <CardContent className={`${isFullscreen ? 'h-[calc(100vh-120px)]' : 'flex-1'} p-0 overflow-hidden`}>
+          <CardContent className={`${isFullscreen ? 'h-[calc(100vh-120px)]' : 'flex-1'} p-0 overflow-hidden relative`}>
             {loading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="flex items-center space-x-2">
@@ -682,27 +889,78 @@ export function AgentRunOutputViewer({
                 <p>No output available yet</p>
               </div>
             ) : (
-              <div
-                ref={scrollAreaRef}
-                className="h-full overflow-y-auto p-4 space-y-2"
-                onScroll={handleScroll}
-              >
+              <>
+                <div
+                  ref={scrollAreaRef}
+                  className="h-full overflow-y-auto"
+                  onScroll={handleSmartScroll}
+                >
+                  <div
+                    style={{
+                      height: `${rowVirtualizer.getTotalSize()}px`,
+                      width: '100%',
+                      position: 'relative',
+                    }}
+                  >
+                    {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                      const message = filteredMessages[virtualItem.index];
+                      const isSearchMatch = searchResults.includes(virtualItem.index);
+                      const isCurrentSearchMatch = isSearchMatch && virtualItem.index === searchResults[currentSearchIndex];
+                      
+                      return (
+                        <div
+                          key={virtualItem.key}
+                          data-index={virtualItem.index}
+                          ref={rowVirtualizer.measureElement}
+                          className={cn(
+                            "absolute top-0 left-0 w-full px-4 py-2",
+                            isCurrentSearchMatch && "bg-yellow-500/20 ring-2 ring-yellow-500/50 ring-inset rounded-lg",
+                            isSearchMatch && !isCurrentSearchMatch && "bg-yellow-500/10"
+                          )}
+                          style={{
+                            transform: `translateY(${virtualItem.start}px)`,
+                          }}
+                        >
+                          <ErrorBoundary>
+                            <StreamMessage message={message} toolResults={toolResultsMap} />
+                          </ErrorBoundary>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div ref={outputEndRef} />
+                </div>
+
+                {/* 滚动到底部按钮 */}
                 <AnimatePresence>
-                  {displayableMessages.map((message: ClaudeStreamMessage, index: number) => (
+                  {showScrollButton && (
                     <motion.div
-                      key={index}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
+                      initial={{ opacity: 0, y: 20, scale: 0.9 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 20, scale: 0.9 }}
                       transition={{ duration: 0.2 }}
+                      className="absolute bottom-4 right-4 z-20"
                     >
-                      <ErrorBoundary>
-                        <StreamMessage message={message} toolResults={toolResultsMap} />
-                      </ErrorBoundary>
+                      <Button
+                        onClick={scrollToBottomSmart}
+                        className={cn(
+                          "rounded-full shadow-lg gap-2 pr-4",
+                          "bg-primary/90 hover:bg-primary",
+                          "text-primary-foreground"
+                        )}
+                        size="sm"
+                      >
+                        <ArrowDown className="h-4 w-4" />
+                        {newMessagesCount > 0 ? (
+                          <span>{newMessagesCount} 条新消息</span>
+                        ) : (
+                          <span>滚动到底部</span>
+                        )}
+                      </Button>
                     </motion.div>
-                  ))}
+                  )}
                 </AnimatePresence>
-                <div ref={outputEndRef} />
-              </div>
+              </>
             )}
           </CardContent>
         </Card>

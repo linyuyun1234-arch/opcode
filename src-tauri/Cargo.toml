@@ -77,8 +77,23 @@ objc = "0.2"
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
 
+# === BUILD OPTIMIZATION ===
+
+# Dev profile - Fast compilation, slow runtime
+[profile.dev]
+codegen-units = 16        # Parallel compilation (match CPU cores)
+incremental = true        # Incremental compilation
+opt-level = 0             # No optimization for speed
+debug = true
+
+# Package-specific optimizations for dev (keep deps optimized)
+[profile.dev.package."*"]
+opt-level = 2
+
+# Release profile - Balanced for reasonable build times
 [profile.release]
 strip = true
-opt-level = "z"
-lto = true
-codegen-units = 1
+opt-level = "z"           # Size optimization
+lto = "thin"              # Faster LTO than "fat"
+codegen-units = 4         # More parallelism, still good optimization
+

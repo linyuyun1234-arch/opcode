@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { Save, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Toast, ToastContainer } from "@/components/ui/toast";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +34,7 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [activeTab, setActiveTab] = useState("edit");
   
   const hasChanges = content !== originalContent;
   
@@ -119,21 +121,42 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
         )}
         
         {/* Content */}
-        <div className="flex-1 overflow-hidden p-6">
+        <div className="flex-1 overflow-hidden p-6 flex flex-col">
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
           ) : (
-            <div className="h-full rounded-lg border border-border overflow-hidden shadow-sm" data-color-mode="dark">
-              <MDEditor
-                value={content}
-                onChange={(val) => setContent(val || "")}
-                preview="edit"
-                height="100%"
-                visibleDragbar={false}
-              />
-            </div>
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between mb-2">
+                <TabsList>
+                  <TabsTrigger value="edit">Edit</TabsTrigger>
+                  <TabsTrigger value="preview">Preview</TabsTrigger>
+                </TabsList>
+                <div className="text-xs text-muted-foreground mr-2">
+                  {content.length} characters
+                </div>
+              </div>
+              
+              <TabsContent value="edit" className="flex-1 mt-0 h-full overflow-hidden border rounded-md border-input bg-transparent ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                <textarea
+                  className="w-full h-full p-4 resize-none bg-transparent font-mono text-sm focus:outline-none"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Enter your system prompt here..."
+                  spellCheck={false}
+                />
+              </TabsContent>
+              
+              <TabsContent value="preview" className="flex-1 mt-0 h-full overflow-y-auto border rounded-md border-border bg-muted/30 p-4">
+                <div data-color-mode="dark">
+                  <MDEditor.Markdown 
+                    source={content} 
+                    style={{ background: 'transparent' }}
+                  />
+                </div>
+              </TabsContent>
+            </Tabs>
           )}
         </div>
       </div>

@@ -4,7 +4,7 @@ import { SessionPersistenceService } from '@/services/sessionPersistence';
 
 export interface Tab {
   id: string;
-  type: 'chat' | 'agent' | 'agents' | 'projects' | 'usage' | 'mcp' | 'settings' | 'claude-md' | 'claude-file' | 'agent-execution' | 'create-agent' | 'import-agent';
+  type: 'chat' | 'agent' | 'agents' | 'usage' | 'mcp' | 'settings' | 'claude-md' | 'claude-file' | 'agent-execution' | 'create-agent' | 'import-agent';
   title: string;
   sessionId?: string;  // for chat tabs
   sessionData?: any; // for chat tabs - stores full session object
@@ -58,13 +58,15 @@ export const TabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { tabs: savedTabs, activeTabId: savedActiveTabId } = TabPersistenceService.loadTabs();
 
       if (savedTabs.length > 0) {
-        // For chat tabs, restore session data
-        const restoredTabs = await Promise.all(savedTabs.map(async (tab) => {
+        // First, set tabs immediately without session data (fast render)
+        setTabs(savedTabs);
+        setActiveTabId(savedActiveTabId);
+
+        // Then, restore session data asynchronously in background
+        Promise.all(savedTabs.map(async (tab) => {
           if (tab.type === 'chat' && tab.sessionId) {
-            // Check if session can be restored
             const sessionData = SessionPersistenceService.loadSession(tab.sessionId);
             if (sessionData) {
-              // Create a Session object for the tab
               const session = SessionPersistenceService.createSessionFromRestoreData(sessionData);
               return {
                 ...tab,
@@ -74,16 +76,16 @@ export const TabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           }
           return tab;
-        }));
-
-        setTabs(restoredTabs);
-        setActiveTabId(savedActiveTabId);
+        })).then(restoredTabs => {
+          // Update tabs with session data after async load
+          setTabs(restoredTabs);
+        });
       } else {
         // Create default projects tab if no saved tabs
         const defaultTab: Tab = {
           id: generateTabId(),
-          type: 'projects',
-          title: 'Projects',
+          type: 'chat',
+          title: 'New Chat',
           status: 'idle',
           hasUnsavedChanges: false,
           order: 0,

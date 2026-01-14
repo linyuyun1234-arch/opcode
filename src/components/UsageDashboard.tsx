@@ -312,7 +312,7 @@ export const UsageDashboard: React.FC<UsageDashboardProps> = ({ }) => {
   }, [stats?.by_date]);
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto bg-background">
       <div className="max-w-6xl mx-auto flex flex-col h-full">
         {/* Header */}
         <div className="p-6">

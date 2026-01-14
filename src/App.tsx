@@ -6,6 +6,7 @@ import { initializeWebMode } from "@/lib/apiAdapter";
 import { OutputCacheProvider } from "@/lib/outputCache";
 import { TabProvider } from "@/contexts/TabContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { OverlayProvider } from "@/contexts/OverlayContext";
 import { Card } from "@/components/ui/card";
 import { ProjectList } from "@/components/ProjectList";
 import { FilePicker } from "@/components/FilePicker";
@@ -17,15 +18,14 @@ import { Settings } from "@/components/Settings";
 import { CCAgents } from "@/components/CCAgents";
 import { UsageDashboard } from "@/components/UsageDashboard";
 import { MCPManager } from "@/components/MCPManager";
-import { NFOCredits } from "@/components/NFOCredits";
 import { ClaudeBinaryDialog } from "@/components/ClaudeBinaryDialog";
 import { Toast, ToastContainer } from "@/components/ui/toast";
 import { ProjectSettings } from '@/components/ProjectSettings';
-import { TabManager } from "@/components/TabManager";
 import { TabContent } from "@/components/TabContent";
+import { AgentSidebar } from "@/components/AgentSidebar";
+import { OverlayManager } from "@/components/OverlayManager";
 import { useTabState } from "@/hooks/useTabState";
 import { useAppLifecycle, useTrackEvent } from "@/hooks";
-import { StartupIntro } from "@/components/StartupIntro";
 
 type View = 
   | "welcome" 
@@ -48,20 +48,20 @@ type View =
  */
 function AppContent() {
   const [view, setView] = useState<View>("tabs");
-  const { createClaudeMdTab, createSettingsTab, createUsageTab, createMCPTab, createAgentsTab } = useTabState();
+  const { createChatTab, switchToSession, startNewSession, activeTab } = useTabState();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [editingClaudeFile, setEditingClaudeFile] = useState<ClaudeMdFile | null>(null);
   const [loading, setLoading] = useState(true);
   const [_error, setError] = useState<string | null>(null);
-  const [showNFO, setShowNFO] = useState(false);
   const [showClaudeBinaryDialog, setShowClaudeBinaryDialog] = useState(false);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [homeDirectory, setHomeDirectory] = useState<string>('/');
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const [projectForSettings, setProjectForSettings] = useState<Project | null>(null);
   const [previousView] = useState<View>("welcome");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   
   // Initialize analytics lifecycle tracking
   useAppLifecycle();
@@ -338,10 +338,27 @@ function AppContent() {
       
       case "tabs":
         return (
-          <div className="h-full flex flex-col">
-            <TabManager className="flex-shrink-0" />
-            <div className="flex-1 overflow-hidden">
-              <TabContent />
+          <div className="h-full flex">
+            {/* Agent Sidebar */}
+            <AgentSidebar
+              collapsed={sidebarCollapsed}
+              onCollapsedChange={setSidebarCollapsed}
+              onNewChat={() => createChatTab()}
+              onSwitchSession={(session) => {
+                const title = session.first_message 
+                  ? (session.first_message.length > 30 
+                      ? session.first_message.slice(0, 30) + '...' 
+                      : session.first_message)
+                  : `Session ${session.id.slice(0, 8)}`;
+                switchToSession(session.id, session.project_id, session.project_path, title);
+              }}
+            />
+            
+            {/* Main Content */}
+            <div className="flex-1 flex flex-col min-w-0">
+              <div className="flex-1 overflow-hidden">
+                <TabContent />
+              </div>
             </div>
           </div>
         );
@@ -382,34 +399,34 @@ function AppContent() {
     <div className="h-screen flex flex-col">
       {/* Custom Titlebar */}
       <CustomTitlebar
-        onAgentsClick={() => createAgentsTab()}
-        onUsageClick={() => createUsageTab()}
-        onClaudeClick={() => createClaudeMdTab()}
-        onMCPClick={() => createMCPTab()}
-        onSettingsClick={() => createSettingsTab()}
-        onInfoClick={() => setShowNFO(true)}
+        currentProjectPath={activeTab?.projectPath || activeTab?.initialProjectPath}
+        onProjectSelect={(project) => {
+          // 为新项目启动新的 session（空对话）
+          startNewSession(project.path);
+          // 通知 sidebar 刷新 session 列表
+          window.dispatchEvent(new CustomEvent('refresh-sessions'));
+        }}
+        onOpenProject={async () => {
+          const { open } = await import('@tauri-apps/plugin-dialog');
+          const selected = await open({
+            directory: true,
+            multiple: false,
+            title: 'Select Project Folder',
+          });
+          if (selected && typeof selected === 'string') {
+            const project = await api.createProject(selected);
+            // 为新项目启动新的 session（空对话）
+            startNewSession(project.path);
+            // 通知 sidebar 刷新 session 列表
+            window.dispatchEvent(new CustomEvent('refresh-sessions'));
+          }
+        }}
       />
-      
-      {/* Topbar - Commented out since navigation moved to titlebar */}
-      {/* <Topbar
-        onClaudeClick={() => createClaudeMdTab()}
-        onSettingsClick={() => createSettingsTab()}
-        onUsageClick={() => createUsageTab()}
-        onMCPClick={() => createMCPTab()}
-        onInfoClick={() => setShowNFO(true)}
-        onAgentsClick={() => setShowAgentsModal(true)}
-      /> */}
-      
-      
       
       {/* Main Content */}
       <div className="flex-1 overflow-hidden">
         {renderContent()}
       </div>
-      
-      {/* NFO Credits Modal */}
-      {showNFO && <NFOCredits onClose={() => setShowNFO(false)} />}
-      
       
       {/* Claude Binary Dialog */}
       <ClaudeBinaryDialog
@@ -486,6 +503,9 @@ function AppContent() {
           </div>
         </div>
       )}
+      
+      {/* 全屏浮窗管理器 - 放在最外层确保正确覆盖 */}
+      <OverlayManager />
     </div>
   );
 }
@@ -494,47 +514,13 @@ function AppContent() {
  * Main App component - Wraps the app with providers
  */
 function App() {
-  const [showIntro, setShowIntro] = useState(() => {
-    // Read cached preference synchronously to avoid any initial flash
-    try {
-      const cached = typeof window !== 'undefined'
-        ? window.localStorage.getItem('app_setting:startup_intro_enabled')
-        : null;
-      if (cached === 'true') return true;
-      if (cached === 'false') return false;
-    } catch (_ignore) {}
-    return true; // default if no cache
-  });
-
-  useEffect(() => {
-    let timer: number | undefined;
-    (async () => {
-      try {
-        const pref = await api.getSetting('startup_intro_enabled');
-        const enabled = pref === null ? true : pref === 'true';
-        if (enabled) {
-          // keep intro visible and hide after duration
-          timer = window.setTimeout(() => setShowIntro(false), 2000);
-        } else {
-          // user disabled intro: hide immediately to avoid any overlay delay
-          setShowIntro(false);
-        }
-      } catch (err) {
-        // On failure, show intro once to keep UX consistent
-        timer = window.setTimeout(() => setShowIntro(false), 2000);
-      }
-    })();
-    return () => {
-      if (timer) window.clearTimeout(timer);
-    };
-  }, []);
-
   return (
     <ThemeProvider>
       <OutputCacheProvider>
         <TabProvider>
-          <AppContent />
-          <StartupIntro visible={showIntro} />
+          <OverlayProvider>
+            <AppContent />
+          </OverlayProvider>
         </TabProvider>
       </OutputCacheProvider>
     </ThemeProvider>

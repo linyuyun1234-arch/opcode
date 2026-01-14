@@ -880,75 +880,97 @@ async fn spawn_agent_system(
         info!("📖 Starting to read Claude stdout...");
         let mut lines = stdout_reader.lines();
         let mut line_count = 0;
+        let mut buffer: Vec<String> = Vec::new();
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+        // Set the first tick to complete immediately
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            line_count += 1;
+        loop {
+            tokio::select! {
+                result = lines.next_line() => {
+                    match result {
+                        Ok(Some(line)) => {
+                            line_count += 1;
 
-            // Log first output
-            if !first_output_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                info!(
-                    "🎉 First output received from Claude process! Line: {}",
-                    line
-                );
-                first_output_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
+                            // Log first output
+                            if !first_output_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                info!(
+                                    "🎉 First output received from Claude process! Line: {}",
+                                    line
+                                );
+                                first_output_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
 
-            if line_count <= 5 {
-                info!("stdout[{}]: {}", line_count, line);
-            } else {
-                debug!("stdout[{}]: {}", line_count, line);
-            }
+                            if line_count <= 5 {
+                                info!("stdout[{}]: {}", line_count, line);
+                            } else {
+                                debug!("stdout[{}]: {}", line_count, line);
+                            }
 
-            // Store live output in both local buffer and registry
-            if let Ok(mut output) = live_output_clone.lock() {
-                output.push_str(&line);
-                output.push('\n');
-            }
+                            // Store live output in both local buffer and registry
+                            if let Ok(mut output) = live_output_clone.lock() {
+                                output.push_str(&line);
+                                output.push('\n');
+                            }
 
-            // Also store in process registry for cross-session access
-            let _ = registry_clone.append_live_output(run_id, &line);
+                            // Also store in process registry for cross-session access
+                            let _ = registry_clone.append_live_output(run_id, &line);
 
-            // Extract session ID from JSONL output
-            if let Ok(json) = serde_json::from_str::<JsonValue>(&line) {
-                // Claude Code uses "session_id" (underscore), not "sessionId"
-                if json.get("type").and_then(|t| t.as_str()) == Some("system")
-                    && json.get("subtype").and_then(|s| s.as_str()) == Some("init")
-                {
-                    if let Some(sid) = json.get("session_id").and_then(|s| s.as_str()) {
-                        if let Ok(mut current_session_id) = session_id_clone.lock() {
-                            if current_session_id.is_empty() {
-                                *current_session_id = sid.to_string();
-                                info!("🔑 Extracted session ID: {}", sid);
+                            // Extract session ID from JSONL output
+                            if let Ok(json) = serde_json::from_str::<JsonValue>(&line) {
+                                if json.get("type").and_then(|t| t.as_str()) == Some("system")
+                                    && json.get("subtype").and_then(|s| s.as_str()) == Some("init")
+                                {
+                                    if let Some(sid) = json.get("session_id").and_then(|s| s.as_str()) {
+                                        if let Ok(mut current_session_id) = session_id_clone.lock() {
+                                            if current_session_id.is_empty() {
+                                                *current_session_id = sid.to_string();
+                                                info!("🔑 Extracted session ID: {}", sid);
 
-                                // Update database immediately with session ID
-                                if let Ok(conn) = Connection::open(&db_path_for_stdout) {
-                                    match conn.execute(
-                                        "UPDATE agent_runs SET session_id = ?1 WHERE id = ?2",
-                                        params![sid, run_id],
-                                    ) {
-                                        Ok(rows) => {
-                                            if rows > 0 {
-                                                info!("✅ Updated agent run {} with session ID immediately", run_id);
+                                                if let Ok(conn) = Connection::open(&db_path_for_stdout) {
+                                                    let _ = conn.execute(
+                                                        "UPDATE agent_runs SET session_id = ?1 WHERE id = ?2",
+                                                        params![sid, run_id],
+                                                    );
+                                                }
                                             }
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                "❌ Failed to update session ID immediately: {}",
-                                                e
-                                            );
                                         }
                                     }
                                 }
                             }
+
+                            // Add to buffer
+                            buffer.push(line);
+
+                            // Flush if buffer is full
+                            if buffer.len() >= 50 {
+                                let _ = app_handle.emit(&format!("agent-output:{}", run_id), &buffer);
+                                let _ = app_handle.emit("agent-output", &buffer);
+                                buffer.clear();
+                            }
+                        }
+                        Ok(None) => break, // End of stream
+                        Err(e) => {
+                            error!("Error reading line: {}", e);
+                            break;
                         }
                     }
                 }
+                _ = interval.tick() => {
+                    // Flush buffer on interval
+                    if !buffer.is_empty() {
+                        let _ = app_handle.emit(&format!("agent-output:{}", run_id), &buffer);
+                        let _ = app_handle.emit("agent-output", &buffer);
+                        buffer.clear();
+                    }
+                }
             }
+        }
 
-            // Emit the line to the frontend with run_id for isolation
-            let _ = app_handle.emit(&format!("agent-output:{}", run_id), &line);
-            // Also emit to the generic event for backward compatibility
-            let _ = app_handle.emit("agent-output", &line);
+        // Final flush
+        if !buffer.is_empty() {
+            let _ = app_handle.emit(&format!("agent-output:{}", run_id), &buffer);
+            let _ = app_handle.emit("agent-output", &buffer);
         }
 
         info!(

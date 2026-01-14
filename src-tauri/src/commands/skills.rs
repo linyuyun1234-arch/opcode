@@ -3,7 +3,7 @@ use reqwest::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{command, AppHandle};
+use tauri::command;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SkillInfo {

@@ -155,6 +155,13 @@ fn create_system_command(claude_path: &str, args: Vec<String>, project_path: &st
 
     // Enable LSP tools and other skills
     cmd.env("ENABLE_LSP_TOOLS", "1");
+    
+    // Force unbuffered output for various runtimes
+    cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.env("NODE_OPTIONS", "--no-warnings");
+    cmd.env("FORCE_COLOR", "0");
+    // Disable line buffering for stdout
+    cmd.env("STDBUF_O", "0");
 
     cmd.current_dir(project_path)
         .stdout(Stdio::piped())
@@ -848,8 +855,9 @@ async fn spawn_claude_process(
     use std::sync::Mutex;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    // Spawn the process
+    // Spawn the process with stdin set to null to prevent blocking
     let mut child = cmd
+        .stdin(Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to spawn Claude: {}", e))?;
 
@@ -861,9 +869,9 @@ async fn spawn_claude_process(
     let pid = child.id().unwrap_or(0);
     log::info!("Spawned Claude process with PID: {:?}", pid);
 
-    // Create readers first (before moving child)
-    let stdout_reader = BufReader::new(stdout);
-    let stderr_reader = BufReader::new(stderr);
+    // Create readers with smaller buffer for more responsive streaming
+    let stdout_reader = BufReader::with_capacity(256, stdout);
+    let stderr_reader = BufReader::with_capacity(256, stderr);
 
     // We'll extract the session ID from Claude's init message
     let session_id_holder: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -893,8 +901,6 @@ async fn spawn_claude_process(
     let stdout_task = tokio::spawn(async move {
         let mut lines = stdout_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            log::debug!("Claude stdout: {}", line);
-
             // Parse the line to check for init message with session ID
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                 if msg["type"] == "system" && msg["subtype"] == "init" {
@@ -932,12 +938,9 @@ async fn spawn_claude_process(
             }
 
             // Emit the line to the frontend with session isolation if we have session ID
-            // 只发送一个事件以避免前端收到重复消息
             if let Some(ref session_id) = *session_id_holder_clone.lock().unwrap() {
-                // 发送会话特定事件（前端优先监听这个）
                 let _ = app_handle.emit(&format!("claude-output:{}", session_id), &line);
             } else {
-                // 只有在没有会话 ID 时才发送通用事件（用于初始化阶段）
                 let _ = app_handle.emit("claude-output", &line);
             }
         }

@@ -24,3 +24,11 @@ export {
   useAsyncPerformanceTracker 
 } from './usePerformanceMonitor';
 export { TAB_SCREEN_NAMES } from './useAnalytics';
+
+// 会话分支管理
+export { useSessionBranch } from './useSessionBranch';
+export type { Branch, UseSessionBranchOptions, UseSessionBranchReturn } from './useSessionBranch';
+
+// 文件变更追踪
+export { useFileChanges } from './useFileChanges';
+export type { UseFileChangesOptions, UseFileChangesReturn } from './useFileChanges';

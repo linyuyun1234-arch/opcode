@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
-import { X, Plus, MessageSquare, Bot, AlertCircle, Loader2, Folder, BarChart, Server, Settings, FileText } from 'lucide-react';
+import { X, Plus, MessageSquare, Bot, AlertCircle, Loader2, BarChart, Server, Settings, FileText } from 'lucide-react';
 import { useTabState } from '@/hooks/useTabState';
 import { Tab, useTabContext } from '@/contexts/TabContext';
 import { cn } from '@/lib/utils';
@@ -25,8 +25,6 @@ const TabItem: React.FC<TabItemProps> = ({ tab, isActive, onClose, onClick, isDr
       case 'agent':
       case 'agents':
         return Bot;
-      case 'projects':
-        return Folder;
       case 'usage':
         return BarChart;
       case 'mcp':
@@ -142,7 +140,6 @@ export const TabManager: React.FC<TabManagerProps> = ({ className }) => {
     tabs,
     activeTabId,
     createChatTab,
-    createProjectsTab,
     closeTab,
     switchToTab,
     canAddTab
@@ -175,8 +172,8 @@ export const TabManager: React.FC<TabManagerProps> = ({ className }) => {
   // Listen for keyboard shortcut events
   useEffect(() => {
     const handleCreateTab = () => {
-      createProjectsTab();
-      trackEvent.tabCreated('projects');
+      createChatTab();
+      trackEvent.tabCreated('chat');
     };
 
     const handleCloseTab = async () => {
@@ -284,8 +281,8 @@ export const TabManager: React.FC<TabManagerProps> = ({ className }) => {
 
   const handleNewTab = () => {
     if (canAddTab()) {
-      createProjectsTab();
-      trackEvent.tabCreated('projects');
+      createChatTab();
+      trackEvent.tabCreated('chat');
     }
   };
 

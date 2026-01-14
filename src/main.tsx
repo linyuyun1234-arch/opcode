@@ -9,11 +9,12 @@ import "./assets/shimmer.css";
 import "./styles.css";
 import AppIcon from "./assets/nfo/asterisk-logo.png";
 
-// Initialize analytics before rendering
-analytics.initialize();
-
-// Start resource monitoring (check every 2 minutes)
-resourceMonitor.startMonitoring(120000);
+// Initialize analytics after render (non-blocking)
+setTimeout(() => {
+  analytics.initialize();
+  // Start resource monitoring (check every 2 minutes)
+  resourceMonitor.startMonitoring(120000);
+}, 0);
 
 // Add a macOS-specific class to the <html> element to enable platform-specific styling
 // Browser-safe detection using navigator properties (works in Tauri and web preview)

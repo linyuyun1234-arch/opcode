@@ -826,20 +826,26 @@ export const WriteWidget: React.FC<{ filePath: string; content: string; result?:
     if (!isMaximized) return null;
 
     return createPortal(
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        {/* Backdrop with blur */}
+      <div className="fixed inset-0 z-[100] flex items-center justify-center">
+        {/* Backdrop */}
         <div
-          className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          className="absolute inset-0 bg-black/60"
           onClick={() => setIsMaximized(false)}
         />
 
-        {/* Modal content */}
-        <div className="relative w-[90vw] h-[90vh] max-w-7xl bg-background rounded-lg border shadow-2xl overflow-hidden flex flex-col">
+        {/* Modal content - 完全不透明背景 */}
+        <div 
+          className="relative w-[90vw] h-[90vh] max-w-7xl rounded-lg border shadow-2xl overflow-hidden flex flex-col"
+          style={{ backgroundColor: 'var(--card, #ffffff)' }}
+        >
           {/* Header */}
-          <div className="px-6 py-4 border-b bg-background flex items-center justify-between">
+          <div 
+            className="px-6 py-4 border-b flex items-center justify-between"
+            style={{ backgroundColor: 'var(--muted, #f4f4f5)' }}
+          >
             <div className="flex items-center gap-3">
               <FileText className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-mono text-muted-foreground">{filePath}</span>
+              <span className="text-sm font-mono text-foreground">{filePath}</span>
             </div>
             <Button
               variant="ghost"
@@ -852,17 +858,21 @@ export const WriteWidget: React.FC<{ filePath: string; content: string; result?:
           </div>
 
           {/* Code content */}
-          <div className="flex-1 overflow-auto">
+          <div 
+            className="flex-1 overflow-auto"
+            style={{ backgroundColor: 'var(--card, #ffffff)' }}
+          >
             <SyntaxHighlighter
               language={language}
               style={syntaxTheme}
               customStyle={{
                 margin: 0,
                 padding: '1.5rem',
-                background: 'transparent',
+                backgroundColor: 'var(--card, #ffffff)',
                 fontSize: '0.75rem',
                 lineHeight: '1.5',
-                height: '100%'
+                height: '100%',
+                minHeight: '100%'
               }}
               showLineNumbers
             >
@@ -1787,9 +1797,13 @@ export const MultiEditResultWidget: React.FC<{
 
         <div className="space-y-4">
           {edits.map((edit, index) => {
-            // Split the strings into lines for diff display
-            const oldLines = edit.old_string.split('\n');
-            const newLines = edit.new_string.split('\n');
+            // Generate diff
+            const diffResult = Diff.diffLines(edit.old_string, edit.new_string, {
+              newlineIsToken: true
+            });
+            
+            let oldLineNum = 1;
+            let newLineNum = 1;
 
             return (
               <div key={index} className="border border-border/50 rounded-md overflow-hidden">
@@ -1797,36 +1811,61 @@ export const MultiEditResultWidget: React.FC<{
                   <span className="text-xs font-medium text-muted-foreground">Change {index + 1}</span>
                 </div>
 
-                <div className="font-mono text-xs">
-                  {/* Show removed lines */}
-                  {oldLines.map((line, lineIndex) => (
-                    <div
-                      key={`old-${lineIndex}`}
-                      className="flex bg-red-500/10 border-l-4 border-red-500"
-                    >
-                      <span className="w-12 px-2 py-1 text-red-600 dark:text-red-400 select-none text-right bg-red-500/10">
-                        -{lineIndex + 1}
-                      </span>
-                      <pre className="flex-1 px-3 py-1 text-red-700 dark:text-red-300 overflow-x-auto">
-                        <code>{line || ' '}</code>
-                      </pre>
-                    </div>
-                  ))}
+                <div className="font-mono text-xs overflow-x-auto">
+                  {diffResult.map((part, partIndex) => {
+                    const lines = part.value.split('\n');
+                    // Remove the last empty string if it comes from split
+                    if (lines.length > 0 && lines[lines.length - 1] === '') {
+                      lines.pop();
+                    }
+                    
+                    const isAdded = part.added;
+                    const isRemoved = part.removed;
+                    const isUnchanged = !isAdded && !isRemoved;
 
-                  {/* Show added lines */}
-                  {newLines.map((line, lineIndex) => (
-                    <div
-                      key={`new-${lineIndex}`}
-                      className="flex bg-green-500/10 border-l-4 border-green-500"
-                    >
-                      <span className="w-12 px-2 py-1 text-green-600 dark:text-green-400 select-none text-right bg-green-500/10">
-                        +{lineIndex + 1}
-                      </span>
-                      <pre className="flex-1 px-3 py-1 text-green-700 dark:text-green-300 overflow-x-auto">
-                        <code>{line || ' '}</code>
-                      </pre>
-                    </div>
-                  ))}
+                    return lines.map((line, lineIndex) => {
+                      // Calculate line numbers
+                      const displayOldLine = isAdded ? '' : oldLineNum++;
+                      const displayNewLine = isRemoved ? '' : newLineNum++;
+
+                      return (
+                        <div
+                          key={`${partIndex}-${lineIndex}`}
+                          className={cn(
+                            "flex min-w-full",
+                            isAdded && "bg-green-500/10 dark:bg-green-900/20",
+                            isRemoved && "bg-red-500/10 dark:bg-red-900/20"
+                          )}
+                        >
+                          {/* Line Numbers */}
+                          <div className="flex select-none text-muted-foreground/50 text-[10px] bg-muted/30">
+                            <span className="w-8 px-1 text-right border-r border-border/50">
+                              {displayOldLine}
+                            </span>
+                            <span className="w-8 px-1 text-right border-r border-border/50">
+                              {displayNewLine}
+                            </span>
+                          </div>
+                          
+                          {/* Marker */}
+                          <div className="w-6 px-1 text-center select-none flex-shrink-0">
+                            {isAdded && <span className="text-green-600 dark:text-green-400">+</span>}
+                            {isRemoved && <span className="text-red-600 dark:text-red-400">-</span>}
+                          </div>
+
+                          {/* Content */}
+                          <pre className={cn(
+                            "flex-1 px-2 py-0.5 overflow-visible",
+                            isAdded && "text-green-700 dark:text-green-300",
+                            isRemoved && "text-red-700 dark:text-red-300 line-through opacity-70",
+                            isUnchanged && "text-foreground"
+                          )}>
+                            <code>{line || ' '}</code>
+                          </pre>
+                        </div>
+                      );
+                    });
+                  })}
                 </div>
               </div>
             );

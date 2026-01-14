@@ -27,6 +27,7 @@ import { StorageTab } from "./StorageTab";
 import { HooksEditor } from "./HooksEditor";
 import { SlashCommandsManager } from "./SlashCommandsManager";
 import { ProxySettings } from "./ProxySettings";
+import { MarkdownEditor } from "./MarkdownEditor";
 import { useTheme, useTrackEvent } from "@/hooks";
 import { analytics } from "@/lib/analytics";
 import { TabPersistenceService } from "@/services/tabPersistence";
@@ -333,7 +334,7 @@ export const Settings: React.FC<SettingsProps> = ({
   };
 
   return (
-    <div className={cn("h-full overflow-y-auto", className)}>
+    <div className={cn("h-full overflow-y-auto bg-background", className)}>
       <div className="max-w-6xl mx-auto flex flex-col h-full">
         {/* Header */}
         <div className="p-6">
@@ -393,7 +394,7 @@ export const Settings: React.FC<SettingsProps> = ({
       ) : (
         <div className="flex-1 overflow-y-auto p-6">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid grid-cols-8 w-full mb-6 h-auto p-1">
+            <TabsList className="grid grid-cols-9 w-full mb-6 h-auto p-1">
               <TabsTrigger value="general" className="py-2.5 px-3">General</TabsTrigger>
               <TabsTrigger value="permissions" className="py-2.5 px-3">Permissions</TabsTrigger>
               <TabsTrigger value="environment" className="py-2.5 px-3">Environment</TabsTrigger>
@@ -402,6 +403,7 @@ export const Settings: React.FC<SettingsProps> = ({
               <TabsTrigger value="commands" className="py-2.5 px-3">Commands</TabsTrigger>
               <TabsTrigger value="storage" className="py-2.5 px-3">Storage</TabsTrigger>
               <TabsTrigger value="proxy" className="py-2.5 px-3">Proxy</TabsTrigger>
+              <TabsTrigger value="claude-md" className="py-2.5 px-3">CLAUDE.md</TabsTrigger>
             </TabsList>
             
             {/* General Settings */}
@@ -1057,6 +1059,11 @@ export const Settings: React.FC<SettingsProps> = ({
                   }}
                 />
               </Card>
+            </TabsContent>
+
+            {/* CLAUDE.md Editor */}
+            <TabsContent value="claude-md" className="h-[calc(100vh-280px)]">
+              <MarkdownEditor onBack={() => {}} className="h-full" />
             </TabsContent>
             
           </Tabs>

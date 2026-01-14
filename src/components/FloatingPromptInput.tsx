@@ -82,6 +82,8 @@ interface FloatingPromptInputProps {
 
 export interface FloatingPromptInputRef {
   addImage: (imagePath: string) => void;
+  setValue: (value: string) => void;
+  focus: () => void;
 }
 
 /**
@@ -271,7 +273,7 @@ const FloatingPromptInputInner = (
   const [textareaHeight, setTextareaHeight] = useState<number>(48);
   const isIMEComposingRef = useRef(false);
 
-  // Expose a method to add images programmatically
+  // Expose methods to interact with the input programmatically
   React.useImperativeHandle(
     ref,
     () => ({
@@ -285,6 +287,24 @@ const FloatingPromptInputInner = (
         setTimeout(() => {
           const target = isExpanded ? expandedTextareaRef.current : textareaRef.current;
           target?.focus();
+        }, 0);
+      },
+      setValue: (value: string) => {
+        setPrompt(value);
+        // Auto-expand if the text is long
+        if (value.length > 100 || value.includes('\n')) {
+          setIsExpanded(true);
+        }
+      },
+      focus: () => {
+        setTimeout(() => {
+          const target = isExpanded ? expandedTextareaRef.current : textareaRef.current;
+          target?.focus();
+          // Move cursor to end
+          if (target) {
+            target.selectionStart = target.value.length;
+            target.selectionEnd = target.value.length;
+          }
         }, 0);
       }
     }),
@@ -391,6 +411,11 @@ const FloatingPromptInputInner = (
         }
 
         const webview = getCurrentWebviewWindow();
+        if (!webview || typeof webview.onDragDropEvent !== 'function') {
+          // Webview not available or doesn't support drag-drop events
+          return;
+        }
+        
         unlistenDragDropRef.current = await webview.onDragDropEvent((event: any) => {
           if (event.payload.type === 'enter' || event.payload.type === 'over') {
             setDragActive(true);

@@ -13,6 +13,9 @@ interface UseTabStateReturn {
   
   // Operations
   createChatTab: (projectId?: string, title?: string, projectPath?: string) => string;
+  openSessionTab: (sessionId: string, projectId: string, projectPath: string, title?: string) => string;
+  switchToSession: (sessionId: string, projectId: string, projectPath: string, title?: string) => void;
+  startNewSession: (projectPath: string, title?: string) => void;
   createAgentTab: (agentRunId: string, agentName: string) => string;
   createAgentExecutionTab: (agent: any, tabId: string, projectPath?: string) => string;
   createProjectsTab: () => string | null;
@@ -74,6 +77,98 @@ export const useTabState = (): UseTabStateReturn => {
     });
   }, [addTab, chatTabCount]);
 
+  // Open an existing session - reuse tab if already open
+  const openSessionTab = useCallback((sessionId: string, projectId: string, projectPath: string, title?: string): string => {
+    // Check if tab already exists for this session
+    const existingTab = tabs.find(tab => tab.type === 'chat' && tab.sessionId === sessionId);
+    if (existingTab) {
+      setActiveTab(existingTab.id);
+      return existingTab.id;
+    }
+
+    // Create new tab for the session
+    const tabTitle = title || `Session ${sessionId.slice(0, 8)}`;
+    return addTab({
+      type: 'chat',
+      title: tabTitle,
+      sessionId: sessionId,
+      sessionData: {
+        id: sessionId,
+        project_id: projectId,
+        project_path: projectPath,
+        created_at: Date.now()
+      },
+      initialProjectPath: projectPath,
+      projectPath: projectPath,
+      status: 'idle',
+      hasUnsavedChanges: false,
+      icon: 'message-square'
+    });
+  }, [addTab, tabs, setActiveTab]);
+
+  // Switch to a session - replaces current chat tab instead of creating new one
+  const switchToSession = useCallback((sessionId: string, projectId: string, projectPath: string, title?: string): void => {
+    // Check if this session is already open in a tab
+    const existingTab = tabs.find(tab => tab.type === 'chat' && tab.sessionId === sessionId);
+    if (existingTab) {
+      // Just switch to it
+      setActiveTab(existingTab.id);
+      return;
+    }
+
+    // Find the current active chat tab to replace
+    const currentTab = activeTabId ? getTabById(activeTabId) : undefined;
+    
+    if (currentTab && currentTab.type === 'chat') {
+      // Replace the current chat tab's session
+      const tabTitle = title || `Session ${sessionId.slice(0, 8)}`;
+      updateTab(currentTab.id, {
+        title: tabTitle,
+        sessionId: sessionId,
+        sessionData: {
+          id: sessionId,
+          project_id: projectId,
+          project_path: projectPath,
+          created_at: Date.now()
+        },
+        initialProjectPath: projectPath,
+        projectPath: projectPath,
+        status: 'idle'
+      });
+    } else {
+      // No active chat tab, create a new one
+      openSessionTab(sessionId, projectId, projectPath, title);
+    }
+  }, [tabs, activeTabId, getTabById, setActiveTab, updateTab, openSessionTab]);
+
+  // Start a new session for a project - replaces current chat tab with empty session
+  const startNewSession = useCallback((projectPath: string, title?: string): void => {
+    const projectName = projectPath.split('/').pop() || 'New Chat';
+    const tabTitle = title || projectName;
+    
+    // Find the current active chat tab to replace
+    const currentTab = activeTabId ? getTabById(activeTabId) : undefined;
+    
+    if (currentTab && currentTab.type === 'chat') {
+      // Replace the current chat tab with a new empty session
+      updateTab(currentTab.id, {
+        title: tabTitle,
+        sessionId: undefined,  // No session ID = new session will be created on first message
+        sessionData: undefined,
+        initialProjectPath: projectPath,
+        projectPath: projectPath,
+        status: 'idle'
+      });
+      // Dispatch event to notify ClaudeCodeSession to reset
+      window.dispatchEvent(new CustomEvent('reset-chat-session', { 
+        detail: { tabId: currentTab.id, projectPath } 
+      }));
+    } else {
+      // No active chat tab, create a new one
+      createChatTab(undefined, tabTitle, projectPath);
+    }
+  }, [activeTabId, getTabById, updateTab, createChatTab]);
+
   const createAgentTab = useCallback((agentRunId: string, agentName: string): string => {
     // Check if tab already exists
     const existingTab = tabs.find(tab => tab.agentRunId === agentRunId);
@@ -93,13 +188,13 @@ export const useTabState = (): UseTabStateReturn => {
   }, [addTab, tabs, setActiveTab]);
 
   const createProjectsTab = useCallback((): string | null => {
-    // Allow multiple projects tabs
+    // Projects tab is deprecated, create chat tab instead
     return addTab({
-      type: 'projects',
-      title: 'Projects',
+      type: 'chat',
+      title: 'New Chat',
       status: 'idle',
       hasUnsavedChanges: false,
-      icon: 'folder'
+      icon: 'message-square'
     });
   }, [addTab]);
 
@@ -333,6 +428,9 @@ export const useTabState = (): UseTabStateReturn => {
     
     // Operations
     createChatTab,
+    openSessionTab,
+    switchToSession,
+    startNewSession,
     createAgentTab,
     createAgentExecutionTab,
     createProjectsTab,

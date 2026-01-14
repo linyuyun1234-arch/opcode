@@ -174,7 +174,7 @@ export function OutputCacheProvider({ children }: OutputCacheProviderProps) {
     if (pollingInterval) return;
 
     setIsPolling(true);
-    const interval = setInterval(pollRunningSessions, 3000); // Poll every 3 seconds
+    const interval = setInterval(pollRunningSessions, 2000); // Poll every 2 seconds for snappier updates
     setPollingInterval(interval);
   }, [pollingInterval, pollRunningSessions]);
 

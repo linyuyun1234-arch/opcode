@@ -1,0 +1,9 @@
+# Build settings
+[build]
+jobs = 12  # Parallel jobs
+
+# Uncomment below if you install zld: brew install michaeleisel/zld/zld
+# [target.x86_64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=/usr/local/bin/zld"]
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/zld"]

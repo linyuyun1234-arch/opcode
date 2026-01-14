@@ -229,10 +229,10 @@ export const Agents: React.FC = () => {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto bg-background">
       <div className="max-w-6xl mx-auto flex flex-col h-full">
         {/* Header */}
-        <div className="p-6">
+        <div className="p-6 bg-background">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold tracking-tight">Agents</h1>

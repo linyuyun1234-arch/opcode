@@ -4,7 +4,8 @@ import {
   User,
   Bot,
   AlertCircle,
-  CheckCircle2
+  CheckCircle2,
+  Pencil
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -84,6 +85,7 @@ interface StreamMessageProps {
   className?: string;
   toolResults: Map<string, any>; // Changed from streamMessages
   onLinkDetected?: (url: string) => void;
+  onEditMessage?: (messageText: string) => void; // Callback for editing user messages
 }
 
 // Helper to extract tool IDs from a message
@@ -102,7 +104,7 @@ const extractToolIds = (message: ClaudeStreamMessage): string[] => {
 /**
  * Component to render a single Claude Code stream message
  */
-const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, toolResults, onLinkDetected }) => {
+const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, toolResults, onLinkDetected, onEditMessage }) => {
   // Get current theme
   const { theme } = useTheme();
   const syntaxTheme = getClaudeSyntaxTheme(theme);
@@ -460,12 +462,32 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
       const msg = message.message || message;
 
       let renderedSomething = false;
+      
+      // Extract user text for edit functionality
+      const getUserText = (): string | null => {
+        if (typeof msg.content === 'string') {
+          return msg.content;
+        }
+        if (Array.isArray(msg.content)) {
+          const textParts = msg.content
+            .filter((c: any) => c.type === 'text')
+            .map((c: any) => typeof c.text === 'string' ? c.text : String(c.text || ''));
+          return textParts.length > 0 ? textParts.join('\n') : null;
+        }
+        return null;
+      };
+      
+      const userText = getUserText();
+      const canEdit = onEditMessage && userText && userText.trim().length > 0;
 
       const renderedCard = (
         <div className={cn(
-          "group relative py-3 px-3 rounded-lg border transition-colors bg-muted/30 border-transparent",
+          "group relative py-3 px-3 rounded-lg border transition-colors bg-muted/30 border-transparent hover:border-border/50",
+          canEdit && "cursor-pointer",
           className
-        )}>
+        )}
+        onClick={() => canEdit && onEditMessage(userText)}
+        >
           <div className="flex items-start gap-4">
             <div className="flex flex-col items-center pt-0.5 shrink-0">
               <div className="p-1.5 rounded-lg bg-secondary text-secondary-foreground">
@@ -718,6 +740,15 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                 return null;
               })}
             </div>
+            
+            {/* Edit button - shown on hover */}
+            {canEdit && (
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 self-center">
+                <div className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground">
+                  <Pencil className="h-3.5 w-3.5" />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );
@@ -846,14 +877,20 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
   }
 };
 
+/**
+ * Memoized component to prevent unnecessary re-renders
+ */
 export const StreamMessage = React.memo(StreamMessageComponent, (prev, next) => {
   // 1. Check if message reference changed (content update)
   if (prev.message !== next.message) return false;
   
-  // 2. Check if onLinkDetected callback changed (unlikely but safe)
-  if (prev.onLinkDetected !== next.onLinkDetected) return false;
+  // 2. Check if onEditMessage callback changed
+  if (prev.onEditMessage !== next.onEditMessage) return false;
 
-  // 3. Check if RELEVANT tool results changed
+  // 3. Quick check: if toolResults map reference is the same, no need to check individual results
+  if (prev.toolResults === next.toolResults) return true;
+
+  // 4. Check if RELEVANT tool results changed
   // We only care about toolResults map changes if this message HAS tool calls
   // whose results have changed between prev.toolResults and next.toolResults
   const toolIds = extractToolIds(next.message);

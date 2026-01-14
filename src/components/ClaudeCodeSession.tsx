@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback, startTransition } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Copy,
@@ -113,6 +113,52 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   // Queued prompts state
   const [queuedPrompts, setQueuedPrompts] = useState<Array<{ id: string; prompt: string; model: string }>>([]);
 
+  // ============ STREAMING OPTIMIZATION ============
+  // Buffer for batching stream messages to reduce React re-renders
+  const messageBufferRef = useRef<ClaudeStreamMessage[]>([]);
+  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const FLUSH_INTERVAL_MS = 50; // Batch updates every 50ms for smooth streaming
+
+  // Flush buffered messages to state
+  const flushMessageBuffer = useCallback(() => {
+    if (messageBufferRef.current.length === 0) return;
+    
+    const bufferedMessages = [...messageBufferRef.current];
+    messageBufferRef.current = [];
+    
+    setMessages(prev => {
+      // Deduplicate by UUID
+      const existingUuids = new Set(prev.filter(m => m.uuid).map(m => m.uuid));
+      const newMessages = bufferedMessages.filter(m => !m.uuid || !existingUuids.has(m.uuid));
+      
+      if (newMessages.length === 0) return prev;
+      return [...prev, ...newMessages];
+    });
+  }, []);
+
+  // Add message to buffer with automatic flushing
+  const addMessageToBuffer = useCallback((message: ClaudeStreamMessage) => {
+    messageBufferRef.current.push(message);
+    
+    // Schedule flush if not already scheduled
+    if (!flushTimeoutRef.current) {
+      flushTimeoutRef.current = setTimeout(() => {
+        flushTimeoutRef.current = null;
+        flushMessageBuffer();
+      }, FLUSH_INTERVAL_MS);
+    }
+  }, [flushMessageBuffer]);
+
+  // Cleanup flush timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (flushTimeoutRef.current) {
+        clearTimeout(flushTimeoutRef.current);
+        flushMessageBuffer(); // Flush any remaining messages
+      }
+    };
+  }, [flushMessageBuffer]);
+  // ============ END STREAMING OPTIMIZATION ============
 
   // Unused state - commented to fix TypeScript noUnusedLocals
   // const [isProcessingQueue, _setIsProcessingQueue] = useState(false);
@@ -202,6 +248,24 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       "I'll help you explore"
     ];
 
+    // Pre-build a map of tool_use_id -> tool_name for O(1) lookup
+    const toolUseMap = new Map<string, string>();
+    for (const message of messages) {
+      if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
+        for (const content of message.message.content) {
+          if (content.type === 'tool_use' && content.id && content.name) {
+            toolUseMap.set(content.id, content.name);
+          }
+        }
+      }
+    }
+
+    const toolsWithWidgets = new Set([
+      'task', 'edit', 'multiedit', 'todowrite', 'todoread', 'ls',
+      'read', 'glob', 'bash', 'write', 'grep', 'websearch',
+      'webfetch', 'skill', 'lsp'
+    ]);
+
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i];
       let shouldDisplay = true;
@@ -217,37 +281,40 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       }
 
       // 1. Result Merging Logic
-      // If this is a result message, check if we can merge it into the previous assistant message
       else if (message.type === 'result' && result.length > 0) {
         const lastMsgIndex = result.length - 1;
         const lastMsg = result[lastMsgIndex];
 
         if (lastMsg.type === 'assistant') {
-          // Check if result content is duplicate of assistant content
-          const resultText = message.result || '';
-          const assistantText = lastMsg.message?.content
-            ?.filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-            .join('') || '';
-
-          // If texts are effectively the same (ignoring whitespace), merge stats and skip result message
-          if (resultText.trim() === assistantText.trim()) {
-            // Create a copy of the last message with added resultData
-            const updatedLastMsg = {
-              ...lastMsg,
-              resultData: {
-                cost_usd: message.cost_usd || message.total_cost_usd,
-                duration_ms: message.duration_ms,
-                num_turns: message.num_turns,
-                usage: message.usage
-              }
-            };
-
-            // Update the message in our result array
-            result[lastMsgIndex] = updatedLastMsg;
-
-            // Skip adding this result message to the list
-            continue;
+          const updatedLastMsg = {
+            ...lastMsg,
+            resultData: {
+              cost_usd: message.cost_usd || message.total_cost_usd,
+              duration_ms: message.duration_ms,
+              num_turns: message.num_turns,
+              usage: message.usage
+            }
+          };
+          result[lastMsgIndex] = updatedLastMsg;
+          continue;
+        }
+        
+        const resultText = (message.result || '').trim();
+        if (resultText) {
+          const recentAssistant = result.slice(-3).find(m => m.type === 'assistant');
+          if (recentAssistant?.message?.content) {
+            const assistantText = recentAssistant.message.content
+              ?.filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text || '')
+              .join('')
+              .trim();
+            
+            if (assistantText && (
+              resultText.includes(assistantText.slice(0, 100)) ||
+              assistantText.includes(resultText.slice(0, 100))
+            )) {
+              continue;
+            }
           }
         }
       }
@@ -272,30 +339,10 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 hasVisibleContent = true;
                 break;
               }
-              if (content.type === "tool_result") {
-                let willBeSkipped = false;
-                if (content.tool_use_id) {
-                  for (let j = i - 1; j >= 0; j--) {
-                    const prevMsg = messages[j];
-                    if (prevMsg.type === 'assistant' && prevMsg.message?.content && Array.isArray(prevMsg.message.content)) {
-                      const toolUse = prevMsg.message.content.find((c: any) =>
-                        c.type === 'tool_use' && c.id === content.tool_use_id
-                      );
-                      if (toolUse) {
-                        const toolName = toolUse.name?.toLowerCase();
-                        const toolsWithWidgets = [
-                          'task', 'edit', 'multiedit', 'todowrite', 'todoread', 'ls',
-                          'read', 'glob', 'bash', 'write', 'grep', 'websearch',
-                          'webfetch', 'skill', 'lsp'
-                        ];
-                        if (toolsWithWidgets.includes(toolName) || toolUse.name?.startsWith('mcp__')) {
-                          willBeSkipped = true;
-                        }
-                        break;
-                      }
-                    }
-                  }
-                }
+              if (content.type === "tool_result" && content.tool_use_id) {
+                // Use pre-built map for O(1) lookup instead of O(n) search
+                const toolName = toolUseMap.get(content.tool_use_id)?.toLowerCase();
+                const willBeSkipped = toolName && (toolsWithWidgets.has(toolName) || toolName.startsWith('mcp__'));
                 if (!willBeSkipped) {
                   hasVisibleContent = true;
                   break;
@@ -311,33 +358,45 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
 
       // 4. Skip empty assistant messages and intro/boilerplate messages
       else if (message.type === "assistant" && message.message) {
-        const msg = message.message;
-        if (!msg.content || (Array.isArray(msg.content) && msg.content.length === 0)) {
-          shouldDisplay = false;
-        } else if (Array.isArray(msg.content)) {
-          // Check if it has any meaningful content
-          const hasContent = msg.content.some((c: any) => {
-            if (c.type === 'text') return c.text && c.text.trim().length > 0;
-            return true; // tool_use, thinking, etc are considered content
-          });
-          if (!hasContent) shouldDisplay = false;
+        if ((message as any).isStreaming) {
+          // Don't filter streaming messages
+        } else {
+          const msg = message.message;
+          if (!msg.content || (Array.isArray(msg.content) && msg.content.length === 0)) {
+            shouldDisplay = false;
+          } else if (Array.isArray(msg.content)) {
+            const hasContent = msg.content.some((c: any) => {
+              if (c.type === 'text') return c.text && c.text.trim().length > 0;
+              return true;
+            });
+            if (!hasContent) shouldDisplay = false;
 
-          // Skip Claude Code's initial introduction/capability messages (check ALL assistant messages)
-          if (hasContent) {
-            const textContent = msg.content
-              .filter((c: any) => c.type === 'text')
-              .map((c: any) => c.text || '')
-              .join('');
+            if (hasContent) {
+              const textContent = msg.content
+                .filter((c: any) => c.type === 'text')
+                .map((c: any) => c.text || '')
+                .join('');
 
-            const isIntroMessage = introPatterns.some(pattern =>
-              textContent.includes(pattern)
-            );
+              const isIntroMessage = introPatterns.some(pattern =>
+                textContent.includes(pattern)
+              );
 
-            if (isIntroMessage) {
-              shouldDisplay = false;
+              if (isIntroMessage) {
+                shouldDisplay = false;
+              }
             }
           }
         }
+      }
+
+      // Additional filtering (previously in filteredMessages)
+      // Skip system:init messages with tools
+      if (message.type === 'system' && message.tools && message.tools.length > 0) {
+        shouldDisplay = false;
+      }
+      // Skip empty assistant messages (additional check)
+      if (message.type === 'assistant' && message.message && (!message.message.content || message.message.content.length === 0)) {
+        shouldDisplay = false;
       }
 
       if (shouldDisplay) {
@@ -423,13 +482,17 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
         type: entry.type || "assistant"
       }));
 
-      setMessages(loadedMessages);
-      setRawJsonlOutput(history.map(h => JSON.stringify(h)));
+      // Use startTransition to avoid blocking UI during large history loads
+      startTransition(() => {
+        setMessages(loadedMessages);
+        setRawJsonlOutput(history.map(h => JSON.stringify(h)));
+      });
 
       // After loading history, we're continuing a conversation
       setIsFirstPrompt(false);
 
-      // Scroll to bottom after loading history
+      // Scroll to bottom after loading history - use longer delay for large histories
+      const scrollDelay = loadedMessages.length > 100 ? 200 : 100;
       setTimeout(() => {
         if (loadedMessages.length > 0) {
           const scrollElement = parentRef.current;
@@ -440,7 +503,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
             });
           }
         }
-      }, 100);
+      }, scrollDelay);
     } catch (err) {
       console.error("Failed to load session history:", err);
       setError("Failed to load session history");
@@ -501,25 +564,11 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     // Set up session-specific listeners
     const outputUnlisten = await listen(`claude-output:${sessionId}`, async (event: any) => {
       try {
-        console.log('[ClaudeCodeSession] Received claude-output on reconnect:', event.payload);
-
         if (!isMountedRef.current) return;
 
-        // Store raw JSONL
-        setRawJsonlOutput(prev => [...prev, event.payload]);
-
-        // Parse and display
+        // Parse and use buffered update for streaming optimization
         const message = JSON.parse(event.payload) as ClaudeStreamMessage;
-
-        // Avoid duplicate messages by checking UUID
-        setMessages(prev => {
-          // Check if message with same UUID already exists
-          if (message.uuid && prev.some(m => m.uuid === message.uuid)) {
-            console.log('[ClaudeCodeSession] Skipping duplicate message:', message.uuid);
-            return prev;
-          }
-          return [...prev, message];
-        });
+        addMessageToBuffer(message);
       } catch (err) {
         console.error("Failed to parse message:", err, event.payload);
       }
@@ -535,6 +584,8 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     const completeUnlisten = await listen(`claude-complete:${sessionId}`, async (event: any) => {
       console.log('[ClaudeCodeSession] Received claude-complete on reconnect:', event.payload);
       if (isMountedRef.current) {
+        // Flush any remaining buffered messages before marking complete
+        flushMessageBuffer();
         setIsLoading(false);
         hasActiveSessionRef.current = false;
       }
@@ -580,14 +631,11 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
         setClaudeSessionId(effectiveSession.id);
       }
 
-      // Only clean up and set up new listeners if not already listening
-      if (!isListeningRef.current) {
-        // Clean up previous listeners
-        unlistenRefs.current.forEach(unlisten => unlisten());
-        unlistenRefs.current = [];
-
-        // Mark as setting up listeners
-        isListeningRef.current = true;
+      // Always clean up and set up new listeners for each prompt
+      // This ensures we have fresh listeners that match the current session state
+      unlistenRefs.current.forEach(unlisten => unlisten());
+      unlistenRefs.current = [];
+      isListeningRef.current = true;
 
         // --------------------------------------------------------------------
         // 1️⃣  Event Listener Setup Strategy
@@ -629,50 +677,74 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           unlistenRefs.current = [specificOutputUnlisten, specificErrorUnlisten, specificCompleteUnlisten];
         };
 
-        // Generic listeners (catch-all)
-        const genericOutputUnlisten = await listen('claude-output', async (event: any) => {
-          handleStreamMessage(event.payload);
+        // If we already have a session ID (resuming), set up session-specific listeners immediately
+        if (currentSessionId) {
+          console.log('[ClaudeCodeSession] Already have session ID, setting up session-specific listeners:', currentSessionId);
+          await attachSessionSpecificListeners(currentSessionId);
+        } else {
+          // Generic listeners (catch-all) - only needed for new sessions
+          const genericOutputUnlisten = await listen('claude-output', async (event: any) => {
+            handleStreamMessage(event.payload);
 
-          // Attempt to extract session_id on the fly (for the very first init)
-          try {
-            const msg = JSON.parse(event.payload) as ClaudeStreamMessage;
-            if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
-              if (!currentSessionId || currentSessionId !== msg.session_id) {
-                console.log('[ClaudeCodeSession] Detected new session_id from generic listener:', msg.session_id);
-                currentSessionId = msg.session_id;
-                setClaudeSessionId(msg.session_id);
+            // Attempt to extract session_id on the fly (for the very first init)
+            try {
+              const msg = JSON.parse(event.payload) as ClaudeStreamMessage;
+              if (msg.type === 'system' && msg.subtype === 'init' && msg.session_id) {
+                if (!currentSessionId || currentSessionId !== msg.session_id) {
+                  console.log('[ClaudeCodeSession] Detected new session_id from generic listener:', msg.session_id);
+                  currentSessionId = msg.session_id;
+                  setClaudeSessionId(msg.session_id);
 
-                // If we haven't extracted session info before, do it now
-                if (!extractedSessionInfo) {
-                  // Use cwd from message if available, otherwise fallback to prop/state
-                  const effectiveProjectPath = msg.cwd || projectPath;
-                  const projectId = effectiveProjectPath.replace(/[^a-zA-Z0-9]/g, '-');
+                  // If we haven't extracted session info before, do it now
+                  if (!extractedSessionInfo) {
+                    // Use cwd from message if available, otherwise fallback to prop/state
+                    const effectiveProjectPath = msg.cwd || projectPath;
+                    const projectId = effectiveProjectPath.replace(/[^a-zA-Z0-9]/g, '-');
 
-                  setExtractedSessionInfo({ sessionId: msg.session_id, projectId });
+                    setExtractedSessionInfo({ sessionId: msg.session_id, projectId });
 
-                  // Save session data for restoration
-                  SessionPersistenceService.saveSession(
-                    msg.session_id,
-                    projectId,
-                    effectiveProjectPath,
-                    messages.length
-                  );
+                    // Save session data for restoration
+                    SessionPersistenceService.saveSession(
+                      msg.session_id,
+                      projectId,
+                      effectiveProjectPath,
+                      messages.length
+                    );
 
-                  // Notify parent component about the new session
-                  onSessionCreated?.(msg.session_id, effectiveProjectPath);
+                    // Notify parent component about the new session
+                    onSessionCreated?.(msg.session_id, effectiveProjectPath);
+                  }
+
+                  // Switch to session-specific listeners
+                  await attachSessionSpecificListeners(msg.session_id);
                 }
-
-                // Switch to session-specific listeners
-                await attachSessionSpecificListeners(msg.session_id);
               }
+            } catch {
+              /* ignore parse errors */
             }
-          } catch {
-            /* ignore parse errors */
-          }
-        });
+          });
+
+          const genericErrorUnlisten = await listen('claude-error', (evt: any) => {
+            console.error('Claude error:', evt.payload);
+            setError(evt.payload);
+          });
+
+          const genericCompleteUnlisten = await listen('claude-complete', (evt: any) => {
+            console.log('[ClaudeCodeSession] Received claude-complete (generic):', evt.payload);
+            processComplete(evt.payload);
+          });
+
+          // Store the generic unlisteners for now; they may be replaced later.
+          unlistenRefs.current = [genericOutputUnlisten, genericErrorUnlisten, genericCompleteUnlisten];
+        }
 
         // Ref to track the current streaming message ID for accumulating deltas
         const streamingMessageRef = { current: null as { id: string; text: string } | null };
+        
+        // Throttle ref for streaming text updates - update UI at most every 30ms
+        const lastStreamUpdateRef = { current: 0 };
+        const pendingStreamUpdateRef = { current: null as ReturnType<typeof setTimeout> | null };
+        const STREAM_UPDATE_INTERVAL = 30; // ms
 
         // Helper to process any JSONL stream message string or object
         function handleStreamMessage(payload: string | ClaudeStreamMessage) {
@@ -681,22 +753,17 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
             if (!isMountedRef.current) return;
 
             let message: ClaudeStreamMessage;
-            let rawPayload: string;
 
             if (typeof payload === 'string') {
-              // Tauri mode: payload is a JSON string
-              rawPayload = payload;
               message = JSON.parse(payload) as ClaudeStreamMessage;
             } else {
               // Web mode: payload is already parsed object
               message = payload;
-              rawPayload = JSON.stringify(payload);
+              // rawPayload = JSON.stringify(payload);
             }
 
-            console.log('[ClaudeCodeSession] handleStreamMessage - message type:', message.type);
-
-            // Store raw JSONL
-            setRawJsonlOutput((prev) => [...prev, rawPayload]);
+            // Store raw JSONL - optimization: commented out to improve performance
+            // setRawJsonlOutput((prev) => [...prev, rawPayload]);
 
             // Handle stream_event for real-time streaming
             if (message.type === 'stream_event' && (message as any).event) {
@@ -724,40 +791,116 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                 setMessages((prev) => [...prev, streamingMessage]);
               }
 
-              // Text delta - append to the streaming message
+              // Text delta - append to the streaming message with throttling
               else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
                 const deltaText = event.delta.text || '';
                 if (streamingMessageRef.current) {
                   streamingMessageRef.current.text += deltaText;
 
-                  // Capture the current text before entering async callback
-                  const currentText = streamingMessageRef.current.text;
+                  // Throttle UI updates to reduce re-renders during fast streaming
+                  const now = Date.now();
+                  const timeSinceLastUpdate = now - lastStreamUpdateRef.current;
+                  
+                  // Helper function to perform the actual UI update
+                  const performStreamUpdate = () => {
+                    if (!streamingMessageRef.current) return;
+                    const currentText = streamingMessageRef.current.text;
+                    const targetId = streamingMessageRef.current.id;
+                    
+                    setMessages((prev) => {
+                      if (!targetId) return prev;
 
-                  // Update the last message with the accumulated text
-                  setMessages((prev) => {
-                    const lastIndex = prev.length - 1;
-                    if (lastIndex >= 0 && (prev[lastIndex] as any).isStreaming) {
-                      const updated = [...prev];
-                      const lastMsg = { ...updated[lastIndex] };
-                      if (lastMsg.message?.content?.[0]) {
-                        lastMsg.message = {
-                          ...lastMsg.message,
-                          content: [{ type: 'text', text: currentText }],
-                        };
+                      // Find the message by ID
+                      const index = prev.findIndex(m => m.message?.id === targetId);
+                      
+                      if (index >= 0) {
+                        const updated = [...prev];
+                        const msg = { ...updated[index] };
+                        
+                        // Ensure content structure exists
+                        if (!msg.message) msg.message = { role: 'assistant', content: [] };
+                        if (!msg.message.content) msg.message.content = [];
+                        
+                        // Update or set the text content
+                        if (msg.message.content.length > 0 && msg.message.content[0].type === 'text') {
+                           msg.message.content[0].text = currentText;
+                        } else {
+                           msg.message.content = [{ type: 'text', text: currentText }];
+                        }
+                        
+                        updated[index] = msg;
+                        return updated;
                       }
-                      updated[lastIndex] = lastMsg;
-                      return updated;
+                      
+                      // Fallback: update last message if it's streaming
+                      const lastIndex = prev.length - 1;
+                      if (lastIndex >= 0 && (prev[lastIndex] as any).isStreaming) {
+                        const updated = [...prev];
+                        const lastMsg = { ...updated[lastIndex] };
+                        if (lastMsg.message?.content?.[0]) {
+                          lastMsg.message = {
+                            ...lastMsg.message,
+                            content: [{ type: 'text', text: currentText }],
+                          };
+                        }
+                        updated[lastIndex] = lastMsg;
+                        return updated;
+                      }
+                      
+                      return prev;
+                    });
+                    
+                    lastStreamUpdateRef.current = Date.now();
+                  };
+                  
+                  // If enough time has passed, update immediately
+                  if (timeSinceLastUpdate >= STREAM_UPDATE_INTERVAL) {
+                    if (pendingStreamUpdateRef.current) {
+                      clearTimeout(pendingStreamUpdateRef.current);
+                      pendingStreamUpdateRef.current = null;
                     }
-                    return prev;
-                  });
+                    performStreamUpdate();
+                  } else {
+                    // Schedule an update if not already scheduled
+                    if (!pendingStreamUpdateRef.current) {
+                      pendingStreamUpdateRef.current = setTimeout(() => {
+                        pendingStreamUpdateRef.current = null;
+                        performStreamUpdate();
+                      }, STREAM_UPDATE_INTERVAL - timeSinceLastUpdate);
+                    }
+                  }
                 }
               }
 
               // Message stop - finalize the streaming message
               else if (event.type === 'message_stop') {
+                // Flush any pending stream update before finalizing
+                if (pendingStreamUpdateRef.current) {
+                  clearTimeout(pendingStreamUpdateRef.current);
+                  pendingStreamUpdateRef.current = null;
+                }
+                
+                const targetId = streamingMessageRef.current?.id;
+                const finalText = streamingMessageRef.current?.text || '';
                 streamingMessageRef.current = null;
-                // Mark the last message as no longer streaming
+                
+                // Mark the message as no longer streaming and ensure final text is set
                 setMessages((prev) => {
+                  const index = targetId ? prev.findIndex(m => m.message?.id === targetId) : -1;
+                  
+                  if (index >= 0) {
+                    const updated = [...prev];
+                    const msg = { ...updated[index] };
+                    delete (msg as any).isStreaming;
+                    // Ensure final text is set
+                    if (msg.message?.content?.[0]?.type === 'text') {
+                      msg.message.content[0].text = finalText;
+                    }
+                    updated[index] = msg;
+                    return updated;
+                  }
+                  
+                  // Fallback to last message
                   const lastIndex = prev.length - 1;
                   if (lastIndex >= 0 && (prev[lastIndex] as any).isStreaming) {
                     const updated = [...prev];
@@ -856,15 +999,18 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
               sessionMetrics.current.errorsEncountered += 1;
             }
 
-            // Avoid duplicate messages
-            setMessages((prev) => {
-              // Check UUID-based duplicates
-              if (message.uuid && prev.some(m => m.uuid === message.uuid)) {
-                return prev;
+            // Use buffered update for non-streaming messages to reduce re-renders
+            // Check for duplicates before adding to buffer
+            const isDuplicate = (() => {
+              // Check UUID-based duplicates - need to check both buffer and current state
+              if (message.uuid) {
+                // Check buffer first
+                if (messageBufferRef.current.some(m => m.uuid === message.uuid)) {
+                  return true;
+                }
               }
-
-              // For user messages with text content, check if we already have a user message with the same text
-              // This prevents Claude's returned user message from duplicating our locally added one
+              
+              // For user messages, check text content duplicates
               if (message.type === 'user' && message.message?.content) {
                 const messageText = Array.isArray(message.message.content)
                   ? message.message.content
@@ -872,9 +1018,10 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                     .map((c: any) => c.text)
                     .join('')
                   : '';
-
+                
                 if (messageText) {
-                  const hasDuplicateUserMessage = prev.some(m => {
+                  // Check buffer for duplicate user message
+                  const bufferHasDuplicate = messageBufferRef.current.some(m => {
                     if (m.type !== 'user' || !m.message?.content) return false;
                     const existingText = Array.isArray(m.message.content)
                       ? m.message.content
@@ -884,16 +1031,16 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                       : '';
                     return existingText === messageText;
                   });
-
-                  if (hasDuplicateUserMessage) {
-                    console.log('[ClaudeCodeSession] Skipping duplicate user message with same text');
-                    return prev;
-                  }
+                  if (bufferHasDuplicate) return true;
                 }
               }
-
-              return [...prev, message];
-            });
+              
+              return false;
+            })();
+            
+            if (!isDuplicate) {
+              addMessageToBuffer(message);
+            }
           } catch (err) {
             console.error('Failed to parse message:', err, payload);
           }
@@ -901,6 +1048,14 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
 
         // Helper to handle completion events (both generic and scoped)
         const processComplete = async (success: boolean) => {
+          // Flush any pending stream updates before marking complete
+          if (pendingStreamUpdateRef.current) {
+            clearTimeout(pendingStreamUpdateRef.current);
+            pendingStreamUpdateRef.current = null;
+          }
+          // Also flush the message buffer
+          flushMessageBuffer();
+          
           setIsLoading(false);
           hasActiveSessionRef.current = false;
           isListeningRef.current = false; // Reset listening state
@@ -998,19 +1153,6 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           }
         };
 
-        const genericErrorUnlisten = await listen('claude-error', (evt: any) => {
-          console.error('Claude error:', evt.payload);
-          setError(evt.payload);
-        });
-
-        const genericCompleteUnlisten = await listen('claude-complete', (evt: any) => {
-          console.log('[ClaudeCodeSession] Received claude-complete (generic):', evt.payload);
-          processComplete(evt.payload);
-        });
-
-        // Store the generic unlisteners for now; they may be replaced later.
-        unlistenRefs.current = [genericOutputUnlisten, genericErrorUnlisten, genericCompleteUnlisten];
-
         // --------------------------------------------------------------------
         // 2️⃣  Auto-checkpoint logic moved after listener setup (unchanged)
         // --------------------------------------------------------------------
@@ -1071,7 +1213,6 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
         });
 
         // Execute the appropriate command
-        // Execute the appropriate command
         const isSdkModel = model.startsWith('sdk:');
         const effectiveModel = isSdkModel ? model.replace('sdk:', '') : model;
         
@@ -1109,7 +1250,6 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           trackEvent.modelSelected(model);
           await api.executeClaudeCode(projectPath, prompt, model);
         }
-      }
     } catch (err) {
       console.error("Failed to send prompt:", err);
       setError("Failed to send prompt");
@@ -1371,6 +1511,18 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     // Preview disabled
   };
 
+  // Handle editing a user message - populate the input with the message text
+  const handleEditMessage = useCallback((messageText: string) => {
+    // Don't allow editing while loading
+    if (isLoading) return;
+    
+    // Set the text in the floating prompt input
+    if (floatingPromptRef.current) {
+      floatingPromptRef.current.setValue(messageText);
+      floatingPromptRef.current.focus();
+    }
+  }, [isLoading]);
+
 
 
   // Cleanup event listeners and track mount state
@@ -1426,28 +1578,9 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     };
   }, [effectiveSession, projectPath]);
 
-  // Filter messages - remove null-rendering items upfront
-  const filteredMessages = useMemo(() => {
-    return displayableMessages.filter(message => {
-      // Skip system:init messages
-      if (message.type === 'system' && (message.subtype === 'init' || (message.tools && message.tools.length > 0))) {
-        return false;
-      }
-      // Skip meta messages
-      if (message.isMeta && !message.leafUuid && !message.summary) {
-        return false;
-      }
-      // Skip system messages without content
-      if (message.type === 'system' && !message.result && !message.error) {
-        return false;
-      }
-      // Skip empty assistant messages
-      if (message.type === 'assistant' && message.message && (!message.message.content || message.message.content.length === 0)) {
-        return false;
-      }
-      return true;
-    });
-  }, [displayableMessages]);
+  // filteredMessages is now integrated into displayableMessages to avoid double iteration
+  // The filtering logic has been moved into displayableMessages useMemo
+  const filteredMessages = displayableMessages;
 
   const isAtBottomRef = useRef(true);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1526,16 +1659,19 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       className="flex-1 overflow-y-auto relative"
       style={{ paddingBottom: '0' }}
     >
-      <div ref={contentRef} className="w-full max-w-6xl mx-auto px-4 py-4 min-h-full">
+      <div ref={contentRef} className="w-full max-w-6xl mx-auto px-4 pt-8 pb-4 min-h-full">
         {filteredMessages.map((message, index) => (
           <div
-            key={message.uuid || message.session_id || `msg-${index}`}
+            // key MUST be unique. Fallback to index if uuid is missing or duplicate.
+            // Using index is safe here as the list is append-only mostly.
+            key={message.uuid ? `${message.uuid}-${index}` : `msg-${index}-${message.session_id || 'unknown'}`}
             className="mb-4"
           >
             <StreamMessage
               message={message}
               toolResults={toolResultsMap}
               onLinkDetected={handleLinkDetected}
+              onEditMessage={handleEditMessage}
             />
           </div>
         ))}

@@ -31,3 +31,10 @@ export * from "./ui/pagination";
 export * from "./ui/split-pane";
 export * from "./ui/scroll-area"; 
 export * from "./RunningClaudeSessions"; 
+
+// 新增功能组件
+export * from "./TokenMonitor";
+export * from "./VirtualMessageList";
+export * from "./SessionBranch";
+export * from "./DiffRollback";
+
