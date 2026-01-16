@@ -108,19 +108,23 @@
 
 **Rust** (1.70.0+)
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+打开官网
+👉 https://www.rust-lang.org/tools/install
+下载 rustup-init.exe
+双击运行
+出现提示时直接按 Enter（默认安装）
+安装完成后，重开一个终端，验证：
+rustc --version
+cargo --version
+
 
 **Node.js / Bun**
 
 ```bash
 # 使用 Bun (推荐)
-curl -fsSL https://bun.sh/install | bash
+用 PowerShell（不是 CMD）执行：
+powershell -c "irm bun.sh/install.ps1 | iex"
 
-# 或使用 npm
-npm install
-```
 
 **Linux 额外依赖**
 
@@ -157,7 +161,7 @@ bun install
 # 或 npm install
 
 # 开发模式运行 (带热重载)
-bun run tauri dev
+bun run tauri dev -- --bin opcode
 
 # 生产构建
 bun run tauri build
