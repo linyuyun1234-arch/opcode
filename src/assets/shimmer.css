@@ -143,71 +143,25 @@
   animation: shimmer-overlay 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
-/* Neumorphism-style loading animation */
-@keyframes neu-pulse {
-  0%, 100% {
-    transform: scale(1);
-    box-shadow: 
-      6px 6px 12px #a3b1c6,
-      -6px -6px 12px #ffffff,
-      inset 0 0 0 transparent;
-  }
-  50% {
-    transform: scale(1.05);
-    box-shadow: 
-      8px 8px 16px #a3b1c6,
-      -8px -8px 16px #ffffff,
-      inset 2px 2px 4px rgba(139, 92, 246, 0.1);
-  }
-}
-
-@keyframes neu-spin-ring {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
 .rotating-symbol {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--background, #E0E5EC);
-  box-shadow: 
-    6px 6px 12px #a3b1c6,
-    -6px -6px 12px #ffffff;
-  animation: neu-pulse 2s ease-in-out infinite;
-  position: relative;
+  display: inline-block;
+  color: #8B5CF6;
+  font-size: 1.5rem; /* Make it bigger! */
   margin-right: 0.5rem;
+  font-weight: bold;
+  vertical-align: middle;
+  position: relative;
+  line-height: 1;
+  top: -2px;
 }
 
 .rotating-symbol::before {
-  content: '';
-  position: absolute;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 3px solid transparent;
-  border-top-color: var(--primary, #8B5CF6);
-  border-right-color: var(--primary, #8B5CF6);
-  animation: neu-spin-ring 1s linear infinite;
-}
-
-.rotating-symbol::after {
-  content: '';
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary, #8B5CF6) 0%, rgba(139, 92, 246, 0.4) 100%);
-  box-shadow: 
-    inset 2px 2px 4px rgba(255, 255, 255, 0.3),
-    inset -1px -1px 2px rgba(0, 0, 0, 0.1);
+  content: '◐';
+  display: inline-block;
+  animation: symbol-rotate 2s linear infinite;
+  font-size: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
 }
 
 /* Allow pausing the rotating symbol via an extra class */
