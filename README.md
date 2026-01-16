@@ -149,7 +149,7 @@ xcode-select --install
 
 ```bash
 # 克隆仓库
-git clone https://github.com/hua123an/opcode.git
+git clone https://github.com/linyuyun123-arch/opcode.git
 cd opcode
 
 # 安装前端依赖
