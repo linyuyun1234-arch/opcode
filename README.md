@@ -142,6 +142,15 @@ sudo apt install -y \
   libsoup-3.0-dev \
   libjavascriptcoregtk-4.1-dev
 ```
+**Visual studio C++**
+
+1、安装https://visualstudio.microsoft.com/zh-hans/downloads/?q=build+tools
+2、在安装器中，勾选"Desktop development with C++"工作负载
+3、确保右侧勾选了这些组件:
+  MSVC v143-VS 2022 ++ x64/x86 build tools
+  Windows 10/11 SDK
+4、安装完成后，重启终端((或重启电脑)
+
 
 **macOS**
 
